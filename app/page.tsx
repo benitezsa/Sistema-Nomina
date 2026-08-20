@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { AlertCircle, ArrowDownToLine, ArrowRight, BarChart3, Bell, BookOpen, Calculator, Check, ChevronDown, ClipboardCheck, Clock3, Download, FileBarChart, FileSpreadsheet, Filter, History, LayoutDashboard, Menu, MoreHorizontal, Play, Plus, Search, Settings2, ShieldCheck, SlidersHorizontal, Sparkles, Table2, Upload, Users, X } from 'lucide-react'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
@@ -20,8 +20,16 @@ import { CompaniesView } from '@/components/utilities/companies-view'
 import { DashboardView } from '@/components/utilities/dashboard-view'
 import type { EmployeeUtilityResult, ViewKey } from '@/components/utilities/types'
 
-const navItems: { label: ViewKey | 'Dashboard'; icon: typeof LayoutDashboard; count?: string }[] = [
-  { label: 'Dashboard', icon: LayoutDashboard }, { label: 'Empresas', icon: LayoutDashboard }, { label: 'Configuración', icon: Settings2 }, { label: 'Trabajadores', icon: Users, count: '27' }, { label: 'Cálculo', icon: Calculator }, { label: 'Resultados', icon: BarChart3 }, { label: 'Remanentes', icon: ArrowDownToLine }, { label: 'Reportes', icon: FileBarChart }, { label: 'Auditoría', icon: History },
+const allNavItems: { label: ViewKey | 'Dashboard'; icon: typeof LayoutDashboard; count?: string }[] = [
+  { label: 'Dashboard', icon: LayoutDashboard },
+  { label: 'Empresas', icon: LayoutDashboard },
+  { label: 'Configuración', icon: Settings2 },
+  { label: 'Trabajadores', icon: Users, count: '27' },
+  { label: 'Cálculo', icon: Calculator },
+  { label: 'Resultados', icon: BarChart3 },
+  { label: 'Remanentes', icon: ArrowDownToLine },
+  { label: 'Reportes', icon: FileBarChart },
+  { label: 'Auditoría', icon: History },
 ]
 const statusStyle: Record<string, string> = { Calculado: 'bg-emerald-50 text-emerald-700 border-emerald-200', Cerrado: 'bg-slate-100 text-slate-600 border-slate-200', 'En cálculo': 'bg-amber-50 text-amber-700 border-amber-200', Borrador: 'bg-blue-50 text-blue-700 border-blue-200', Completo: 'bg-emerald-50 text-emerald-700 border-emerald-200', Pendiente: 'bg-amber-50 text-amber-700 border-amber-200', Observado: 'bg-rose-50 text-rose-700 border-rose-200' }
 
@@ -32,6 +40,7 @@ function Kpi({ label, value, hint, tone = 'default', icon: Icon }: { label: stri
 export default function Page() {
   const [view, setView] = useState<ViewKey | 'Dashboard'>('Dashboard')
   const [mobileNav, setMobileNav] = useState(false)
+  const [showAllModules, setShowAllModules] = useState(false)
   const [query, setQuery] = useState('')
   const [selected, setSelected] = useState<EmployeeUtilityResult | null>(null)
   const [runOpen, setRunOpen] = useState(false)
@@ -42,12 +51,33 @@ export default function Page() {
   const filteredEmployees = employees.filter((e) => `${e.name} ${e.code} ${e.department}`.toLowerCase().includes(query.toLowerCase()))
   const notify = (message: string) => { setToast(message); window.setTimeout(() => setToast(''), 2600) }
   const go = (next: ViewKey | 'Dashboard') => { setView(next); setMobileNav(false) }
+  const navItems = showAllModules
+  ? allNavItems
+  : allNavItems.filter(
+      (item) => item.label === 'Dashboard' || item.label === 'Empresas'
+    )
+  useEffect(() => {
+  const modulesUnlocked = localStorage.getItem('utilities-modules-unlocked')
+
+  if (modulesUnlocked === 'true') {
+    setShowAllModules(true)
+  }
+}, [])
 
   return <TooltipProvider><div className="min-h-screen bg-background text-foreground"><aside className={`fixed inset-y-0 left-0 z-40 flex w-64 flex-col border-r border-sidebar-border bg-sidebar transition-transform lg:translate-x-0 ${mobileNav ? 'translate-x-0' : '-translate-x-full'}`}><div className="flex h-16 items-center gap-3 border-b border-sidebar-border px-5"><div className="flex size-8 items-center justify-center rounded-lg bg-primary text-primary-foreground"><Sparkles className="size-4" /></div><div><p className="text-sm font-semibold">NóminaPro</p><p className="text-[10px] uppercase tracking-widest text-sidebar-foreground/50">Enterprise</p></div><Button variant="ghost" size="icon" className="ml-auto lg:hidden" onClick={() => setMobileNav(false)}><X /></Button></div><div className="flex flex-1 flex-col gap-6 p-3"><div><p className="px-3 pb-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-sidebar-foreground/45">Módulo activo</p><div className="rounded-lg border border-sidebar-border bg-sidebar-accent/70 p-3"><div className="flex items-center gap-2"><Calculator className="size-4 text-primary" /><span className="text-sm font-medium">Utilidades</span></div><p className="mt-1 pl-6 text-xs text-sidebar-foreground/55">Cálculo y distribución</p></div></div><nav className="flex flex-col gap-1" aria-label="Navegación principal">{navItems.map(({ label, icon: Icon, count }) => <button key={label} onClick={() => go(label)} className={`flex items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm transition-colors ${view === label ? 'bg-primary text-primary-foreground shadow-sm' : 'text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-foreground'}`}><Icon className="size-4" /><span className="flex-1">{label}</span>{count && <span className={`rounded px-1.5 py-0.5 text-[10px] ${view === label ? 'bg-primary-foreground/15' : 'bg-sidebar-accent'}`}>{count}</span>}</button>)}</nav></div><div className="border-t border-sidebar-border p-3"><div className="flex items-center gap-3 rounded-lg p-2"><Avatar className="size-8"><AvatarFallback className="bg-primary/10 text-xs text-primary">MF</AvatarFallback></Avatar><div className="min-w-0 flex-1"><p className="truncate text-xs font-medium">Mariana Flores</p><p className="truncate text-[11px] text-sidebar-foreground/50">Administrador</p></div><MoreHorizontal className="size-4 text-sidebar-foreground/40" /></div></div></aside>{mobileNav && <button aria-label="Cerrar menú" className="fixed inset-0 z-30 bg-foreground/20 lg:hidden" onClick={() => setMobileNav(false)} />}
 <div className="lg:pl-64"><header className="sticky top-0 z-20 flex h-16 items-center gap-3 border-b border-border/70 bg-background/90 px-4 backdrop-blur sm:px-6"><Button variant="ghost" size="icon" className="lg:hidden" onClick={() => setMobileNav(true)}><Menu /></Button><div className="min-w-0 flex-1"><div className="flex items-center gap-2 text-xs text-muted-foreground"><span className="hidden sm:inline">Utilidades</span><span className="hidden sm:inline">/</span><span className="font-medium text-foreground">Ejercicio 2026</span><Status value="Calculado" /></div><p className="mt-0.5 truncate text-xs text-muted-foreground">{company.name} · RUC {company.ruc}</p></div><Tooltip><TooltipTrigger render={<Button variant="ghost" size="icon" />}><Bell className="size-4" /></TooltipTrigger><TooltipContent>Notificaciones</TooltipContent></Tooltip><Button variant="outline" size="sm" className="hidden sm:flex" onClick={() => notify('Centro de ayuda abierto')}><BookOpen className="mr-2 size-4" />Ayuda</Button></header>
       <main className="mx-auto max-w-[1600px] p-4 sm:p-6 lg:p-8"><div className="mb-6 flex items-center justify-between gap-4"><div><p className="text-xs font-medium text-muted-foreground">Marzo 2026</p><p className="mt-1 text-sm font-medium">Cierre anual de utilidades</p></div><div className="hidden items-center gap-2 md:flex"><div className="flex items-center gap-2 text-xs text-muted-foreground"><span className="flex size-6 items-center justify-center rounded-full bg-primary text-primary-foreground">1</span><span>Información</span></div><div className="h-px w-8 bg-border" /><div className="flex items-center gap-2 text-xs text-primary"><span className="flex size-6 items-center justify-center rounded-full bg-primary text-primary-foreground">2</span><span className="font-medium">Cálculo</span></div><div className="h-px w-8 bg-border" /><div className="flex items-center gap-2 text-xs text-muted-foreground"><span className="flex size-6 items-center justify-center rounded-full border border-border">3</span><span>Revisión</span></div></div><div className="hidden gap-2 sm:flex"><Button variant="outline" size="sm" onClick={() => notify('Cambios guardados en borrador')}><Check className="mr-2 size-4" />Guardar borrador</Button><Button size="sm" onClick={() => setRunOpen(true)}><Play className="mr-2 size-4" />Ejecutar cálculo</Button></div></div>
       {view === 'Dashboard' && <DashboardView companies={companyClients} results={results} onNavigate={(next) => go(next)} />}{view === 'Cálculo' && <CalculationView results={results} totals={totals} errors={validationErrors} onRun={() => setRunOpen(true)} onSelect={setSelected} />}
-      {view === 'Empresas' && <CompaniesView onOpen={() => go('Cálculo')} onNotify={notify} />}
+      {view === 'Empresas' && (
+  <CompaniesView
+    onOpen={() => go('Cálculo')}
+    onNotify={notify}
+    onShowAllModules={() => {
+      setShowAllModules(true)
+      go('Configuración')
+    }}
+  />
+)}
       {view === 'Configuración' && <ConfigurationView onNotify={notify} />}
       {view === 'Trabajadores' && <WorkersView query={query} setQuery={setQuery} employees={filteredEmployees} onNotify={notify} />}
       {view === 'Resultados' && <ResultsView results={results} totals={totals} onSelect={setSelected} onNotify={notify} />}
