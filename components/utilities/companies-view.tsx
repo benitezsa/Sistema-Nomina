@@ -14,9 +14,9 @@ import { companyClients } from '@/lib/utilities-data'
 import type { CompanyClient } from './types'
 
 const statusStyle: Record<string, string> = {
-  Activo: 'bg-emerald-50 text-emerald-700 border-emerald-200',
-  Pendiente: 'bg-amber-50 text-amber-700 border-amber-200',
-  Inactivo: 'bg-slate-100 text-slate-600 border-slate-200',
+  Activo: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30',
+  Pendiente: 'bg-amber-500/10 text-amber-400 border-amber-500/30',
+  Inactivo: 'bg-slate-500/10 text-slate-300 border-slate-500/30',
 }
 
 const money = new Intl.NumberFormat('es-PE')
@@ -49,7 +49,7 @@ function Kpi({
         <div>
           <p className="text-xs font-medium text-muted-foreground">{label}</p>
           <p className="mt-2 text-xl font-semibold tracking-tight">{value}</p>
-          <p className="mt-1 text-xs text-teal-700">{hint}</p>
+          <p className="mt-1 text-xs text-teal-400">{hint}</p>
         </div>
 
         <div className="rounded-lg bg-primary/8 p-2.5 text-primary">
