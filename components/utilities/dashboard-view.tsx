@@ -17,7 +17,7 @@ const tasks = [
 ]
 
 export function DashboardView({ companies, results, onNavigate }: Props) {
-  const total = results.reduce((sum, row) => sum + row.total, 0)
+  const total = results.reduce((sum, row) => sum + row.finalAmount, 0)
   const activeCompanies = companies.filter((company) => company.status === 'Activo').length
   const observed = results.filter((row) => row.status !== 'Completo').length
 
