@@ -309,7 +309,7 @@ export function CompaniesView({
               <Input
                 id="legalName"
                 className="mt-2"
-                placeholder="Ej. Empresa Andina S.A.C."
+                placeholder="Ingrese la razón social"
               />
             </div>
 
@@ -321,7 +321,7 @@ export function CompaniesView({
               <Input
                 id="ruc"
                 className="mt-2"
-                placeholder="20123456789"
+                placeholder="Ingrese el RUC"
               />
             </div>
 

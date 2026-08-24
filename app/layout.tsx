@@ -3,9 +3,8 @@ import type { Metadata, Viewport } from 'next'
 import './globals.css'
 
 export const metadata: Metadata = {
-  title: 'NóminaPro · Utilidades',
+  title: 'Utilidades',
   description: 'Cálculo, distribución y auditoría de utilidades empresariales en Perú.',
-  generator: 'v0.app',
   icons: {
     icon: [
       {

@@ -7,7 +7,7 @@ export default function SignInPage() {
       <section className="mx-auto flex min-h-[calc(100vh-6rem)] max-w-2xl flex-col justify-center">
         <div className="mb-10">
           <p className="mb-5 font-mono text-xs font-semibold uppercase tracking-[0.22em] text-primary">
-            NóminaPro · Utilidades
+            Utilidades
           </p>
 
           <h1 className="text-balance text-4xl font-semibold tracking-tight">
