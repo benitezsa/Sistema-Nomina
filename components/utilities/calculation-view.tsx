@@ -82,16 +82,16 @@ type ImportedWorker = {
   const MESES_EN_CERO: MonthlyValues = { enero: 0, febrero: 0, marzo: 0, abril: 0, mayo: 0, junio: 0, julio: 0, agosto: 0, septiembre: 0, octubre: 0, noviembre: 0, diciembre: 0, total: 0 }
 
   function ImportCard({
-    kind,
-    trabajadores,
-    setTrabajadores,
-  }: {
-    kind: 'remunerations' | 'worked-days'
-    trabajadores: ImportedWorker[]
-    setTrabajadores: React.Dispatch<
-      React.SetStateAction<ImportedWorker[]>
-    >
-  }) {
+  kind,
+  trabajadores,
+  setTrabajadores,
+  setTrabajadoresDias,
+}: {
+  kind: "remunerations" | "worked-days"
+  trabajadores: ImportedWorker[]
+  setTrabajadores: React.Dispatch<React.SetStateAction<ImportedWorker[]>>
+  setTrabajadoresDias?: React.Dispatch<React.SetStateAction<ImportedWorker[]>>
+}) {
     const isRemunerations = kind === 'remunerations'
 
     const title = isRemunerations
@@ -109,6 +109,21 @@ type ImportedWorker = {
 
     const [importedFile, setImportedFile] = useState<string | null>(null)
   const [trabajadorSeleccionado, setTrabajadorSeleccionado] = useState<number | null>(null)
+  const limpiarNombre = (valor: ExcelJS.CellValue): string => {
+  if (!valor) return ''
+
+  if (valor instanceof Date) return ''
+
+  let texto = String(valor).trim()
+
+  // Elimina cualquier fecha JavaScript y todo lo que venga después
+  texto = texto.replace(
+    /\s+(?:Sun|Mon|Tue|Wed|Thu|Fri|Sat)\s+[A-Z][a-z]{2}\s+\d{1,2}\s+\d{4}.*$/gi,
+    ''
+  )
+
+  return texto.trim()
+}
   const formatDate = (date: Date) => {
     const day = String(date.getUTCDate()).padStart(2, '0')
     const month = String(date.getUTCMonth() + 1).padStart(2, '0')
@@ -506,11 +521,13 @@ if (worksheetDias) {
       // Nombres (columnas C / D / E)
       // ----------------------------------------------
       const apellidoPaterno =
-        String(row.getCell(3).value ?? '').trim()
-      const apellidoMaterno =
-        String(row.getCell(4).value ?? '').trim()
-      const nombres =
-        String(row.getCell(5).value ?? '').trim()
+  limpiarNombre(row.getCell(3).value)
+
+const apellidoMaterno =
+  limpiarNombre(row.getCell(4).value)
+
+const nombres =
+  limpiarNombre(row.getCell(5).value)
       const nombresPrevios =
         nombresPorDni.get(dni)
       nombresPorDni.set(
@@ -598,10 +615,11 @@ if (worksheetDias) {
       incidenciasExistentes.push(
         incidencia
       )
-      incidenciasPorDni.set(
-        dni,
-        incidenciasExistentes
-      )
+      const claveDni = String(dni)
+  .trim()
+  .padStart(8, '0')
+
+incidenciasPorDni.set(claveDni, incidenciasExistentes)
       totalIncidencias += 1
     }
   )
@@ -755,25 +773,6 @@ if (worksheetDias) {
     )
   }
 
-  // ==========================================================
-  // GUARDAR INCIDENCIAS EN CADA TRABAJADOR
-  // ==========================================================
-  setTrabajadores(
-    (current) =>
-      current.map(
-        (trabajador) => {
-          const incidencias =
-            incidenciasPorDni.get(
-              trabajador.dni
-            )
-          return {
-            ...trabajador,
-            incidencias:
-              incidencias ?? [],
-          }
-        }
-      )
-  )
   console.log(
     '======================================'
   )
@@ -822,120 +821,89 @@ if (worksheetDias) {
   // PASO 9: GUARDAR LOS DÍAS EXTRAÍDOS
   // ============================================================
 
-  setTrabajadores(
-    (current) => {
-      const actualizados = current.map(
-        (trabajador) => {
-          const clave =
-  String(trabajador.dni).trim().padStart(8, '0')
-  console.log(
-  '[REM→DÍAS] Estado recibido:',
-  {
-    dni: clave,
-    tieneRemuneraciones: !!trabajador.remuneraciones,
-    mesesRemuneraciones: trabajador.mesesRemuneraciones,
-  }
-)
+setTrabajadores((current) => {
+  const actualizados = current.map((trabajador) => {
+    const clave = String(trabajador.dni)
+      .trim()
+      .padStart(8, '0')
 
-          const diasTrabajados =
-  daysByDni.get(clave)
+    const diasTrabajados = daysByDni.get(clave)
+    const incidencias =
+      incidenciasPorDni.get(clave) ?? []
 
-          const infoNombres =
-  nombresPorDni.get(clave)
+    const infoNombres =
+      nombresPorDni.get(clave)
 
-          if (!diasTrabajados && !infoNombres) {
-            return trabajador
-          }
+    return {
+      ...trabajador,
 
+      apellidoPaterno:
+        trabajador.apellidoPaterno ||
+        infoNombres?.apellidoPaterno ||
+        '',
 
-          console.log(
-  '[TRAZABILIDAD] Trabajador antes de actualizar DÍAS:',
-  trabajador.dni,
-  {
-    mesesRemuneraciones: trabajador.mesesRemuneraciones,
-    mesesDias: trabajador.mesesDias,
-  }
-)
-         const mesesDias = diasTrabajados
-  ? months.filter((mes) => diasTrabajados[mes] > 0)
-  : trabajador.mesesDias ?? []
+      apellidoMaterno:
+        trabajador.apellidoMaterno ||
+        infoNombres?.apellidoMaterno ||
+        '',
 
-const mesesPresentes = Array.from(
-  new Set([
-    ...(trabajador.mesesRemuneraciones ?? []),
-    ...mesesDias,
-  ])
-)
+      nombres:
+        trabajador.nombres ||
+        infoNombres?.nombres ||
+        '',
 
-console.log(
-  '[TRAZABILIDAD] Trabajador después de consolidar:',
-  trabajador.dni,
-  {
-    mesesRemuneraciones: trabajador.mesesRemuneraciones,
-    mesesDias,
-    mesesPresentes,
-  }
-)
+      ...(diasTrabajados
+        ? { diasTrabajados }
+        : {}),
 
-return {
-  ...trabajador,
-  apellidoPaterno:
-    trabajador.apellidoPaterno ||
-    infoNombres?.apellidoPaterno ||
-    '',
-  apellidoMaterno:
-    trabajador.apellidoMaterno ||
-    infoNombres?.apellidoMaterno ||
-    '',
-  nombres:
-    trabajador.nombres ||
-    infoNombres?.nombres ||
-    '',
-  ...(diasTrabajados
-    ? { diasTrabajados }
-    : {}),
-  mesesDias,
-  mesesPresentes,
-}
-        }
+      incidencias,
+    }
+  })
+
+  const nuevos = [...daysByDni.keys()]
+    .filter(
+      (dni) =>
+        !current.some(
+          (trabajador) =>
+            String(trabajador.dni)
+              .trim()
+              .padStart(8, '0') === dni
+        )
+    )
+    .map((dni) => {
+      const infoNombres =
+        nombresPorDni.get(dni)
+
+      const diasTrabajados =
+        daysByDni.get(dni)!
+
+      const incidencias =
+        incidenciasPorDni.get(dni) ?? []
+
+      const mesesDias = months.filter(
+        (mes) => diasTrabajados[mes] > 0
       )
 
-      const nuevos: ImportedWorker[] = [...daysByDni.keys()]
-        .filter(
-          (dni) =>
-            !current.some(
-              (trabajador) =>
-                String(trabajador.dni).trim().padStart(8, '0') === dni
-            )
-        )
-        .map(
-          (dni) => {
-            const infoNombres = nombresPorDni.get(dni)
+      return {
+        dni,
+        apellidoPaterno:
+          infoNombres?.apellidoPaterno ?? '',
+        apellidoMaterno:
+          infoNombres?.apellidoMaterno ?? '',
+        nombres:
+          infoNombres?.nombres ?? '',
+        fechaInicio: null,
+        fechaCese: null,
+        remuneraciones: MESES_EN_CERO,
+        diasTrabajados,
+        incidencias,
+        mesesDias,
+        mesesPresentes: mesesDias,
+      }
+    })
 
-            const diasTrabajados = daysByDni.get(dni)!
-
-const mesesDias = months.filter(
-  (mes) => diasTrabajados[mes] > 0
-)
-
-return {
-  dni,
-  apellidoPaterno: infoNombres?.apellidoPaterno ?? '',
-  apellidoMaterno: infoNombres?.apellidoMaterno ?? '',
-  nombres: infoNombres?.nombres ?? '',
-  fechaInicio: null,
-  fechaCese: null,
-  remuneraciones: MESES_EN_CERO,
-  diasTrabajados,
-  mesesDias,
-  mesesPresentes: mesesDias,
-}
-          }
-        )
-
-      return [...actualizados, ...nuevos]
-    }
-  )
+  return [...actualizados, ...nuevos]
+})
 
   setImportedFile(
     file.name
@@ -989,12 +957,12 @@ const worksheet = workbook.getWorksheet('REM')
 
   const dniFinal = dniTexto.padStart(8, '0')
 
-    const apellidoPaterno = String(row.getCell(3).value ?? '').trim()
-    const apellidoMaterno = String(row.getCell(4).value ?? '').trim()
-    const nombres = String(row.getCell(5).value ?? '').trim()
+ const apellidoPaterno = limpiarNombre(row.getCell(3).value)
+const apellidoMaterno = limpiarNombre(row.getCell(4).value)
+const nombres = limpiarNombre(row.getCell(5).value)
 
-    const fechaInicio = row.getCell(6).value
-    const fechaCese = row.getCell(7).value
+const fechaInicio = row.getCell(6).value
+const fechaCese = row.getCell(7).value
 
     const remuneraciones: MonthlyValues = {
   enero: getExcelNumber(row.getCell(9).value),
@@ -1232,7 +1200,9 @@ trabajadoresImportados.push({
           {/* DETALLE DEL TRABAJADOR */}
           {trabajadorSeleccionado === index && (
             <div className="border-t bg-muted/10 px-4 py-4">
-
+<p className="mb-3 text-xs text-red-400">
+  INCIDENCIAS: {trabajador.incidencias?.length ?? 0}
+</p>
               {isRemunerations && (
   <>
     <p className="mb-3 text-sm font-semibold">
@@ -1480,6 +1450,15 @@ trabajadoresImportados.push({
           Ausencias y licencias registradas en el archivo importado
         </p>
         <div className="mt-3 space-y-2">
+
+         {(() => {
+  console.log(
+    '[UI INCIDENCIAS]',
+    trabajador.dni,
+    trabajador.incidencias
+  )
+  return null
+})()}
           {trabajador.incidencias.map((incidencia, incidenciaIndex) => (
             <div
               key={`${incidencia.codigo}-${incidenciaIndex}`}
@@ -1587,10 +1566,11 @@ trabajadoresImportados.push({
     setTrabajadores={setTrabajadores}
   />
   <ImportCard
-    kind="worked-days"
-    trabajadores={trabajadoresDias}
-    setTrabajadores={setTrabajadoresDias}
-  />
+  kind="worked-days"
+  trabajadores={trabajadoresDias}
+  setTrabajadores={setTrabajadoresDias}
+  setTrabajadoresDias={setTrabajadoresDias}
+/>
   </div>
   <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
   <Kpi

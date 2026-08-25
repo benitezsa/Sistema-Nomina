@@ -25,10 +25,10 @@ export function AuthForm() {
 
     // Inicio de sesión temporal.
     // La autenticación real se conectará posteriormente.
-    setTimeout(() => {
-      router.push('/')
-      router.refresh()
-    }, 500)
+  setTimeout(() => {
+  router.push('/')
+  router.refresh()
+}, 500)
   }
 
   return (
