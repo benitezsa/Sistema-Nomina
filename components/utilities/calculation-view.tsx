@@ -53,10 +53,25 @@ type ImportedWorker = {
   apellidoPaterno: string
   apellidoMaterno: string
   nombres: string
+
+  // Datos laborales originales encontrados en los archivos
   fechaInicio: ExcelJS.CellValue
   fechaCese: ExcelJS.CellValue
+
+  // Información consolidada de remuneraciones
   remuneraciones: MonthlyValues
+
+  // Información consolidada de días
   diasTrabajados?: MonthlyValues
+
+  // Meses en los que el trabajador fue encontrado
+  mesesRemuneraciones?: string[]
+  mesesDias?: string[]
+
+  // Meses en los que existe información en cualquiera de las fuentes
+  mesesPresentes?: string[]
+
+  // Información para las siguientes etapas
   incidencias?: IncidenciaImportada[]
   diasNoLaborados?: number
   diasEfectivos?: number
@@ -94,18 +109,42 @@ type ImportedWorker = {
 
     const [importedFile, setImportedFile] = useState<string | null>(null)
   const [trabajadorSeleccionado, setTrabajadorSeleccionado] = useState<number | null>(null)
+  const formatDate = (date: Date) => {
+    const day = String(date.getUTCDate()).padStart(2, '0')
+    const month = String(date.getUTCMonth() + 1).padStart(2, '0')
+    const year = date.getUTCFullYear()
+
+    return `${day}/${month}/${year}`
+  }
+
   const formatExcelDate = (value: ExcelJS.CellValue) => {
     if (!value) return '—'
 
     if (value instanceof Date) {
-      const day = String(value.getUTCDate()).padStart(2, '0')
-      const month = String(value.getUTCMonth() + 1).padStart(2, '0')
-      const year = value.getUTCFullYear()
-
-      return `${day}/${month}/${year}`
+      return formatDate(value)
     }
 
-    return String(value)
+    if (typeof value === 'object') {
+      if ('result' in value) {
+        return formatExcelDate(value.result as ExcelJS.CellValue)
+      }
+
+      if ('text' in value && typeof value.text === 'string') {
+        return formatExcelDate(value.text)
+      }
+    }
+
+    if (typeof value === 'number') {
+      const excelEpoch = Date.UTC(1899, 11, 30)
+      return formatDate(new Date(excelEpoch + value * 86_400_000))
+    }
+
+    if (typeof value === 'string') {
+      const date = new Date(value)
+      return Number.isNaN(date.getTime()) ? value : formatDate(date)
+    }
+
+    return '—'
   }
 
     const handleFile = async (file: File) => {
@@ -434,60 +473,46 @@ const incidenciasPorDni =
   new Map<string, IncidenciaImportada[]>()
 
 const feriadosImportados: FeriadoImportado[] = []
-
 if (worksheetDias) {
   console.log('======================================')
   console.log('EXTRAYENDO INCIDENCIAS DE "DIAS"')
   console.log('======================================')
-
   const FILA_DATOS = 11
-
   const COL_DNI = 2
   const COL_CODIGO = 6
   const COL_DESCRIPCION = 7
   const COL_CANTIDAD_DIAS = 10
   const COL_FECHA_INICIO = 12
   const COL_FECHA_FIN = 13
-
   let totalIncidencias = 0
-
   worksheetDias.eachRow(
     (row, rowNumber) => {
       if (rowNumber < FILA_DATOS) {
         return
       }
-
       // ----------------------------------------------
       // DNI
       // ----------------------------------------------
-
       const dni =
         normalizeDni(
           row.getCell(
             COL_DNI
           ).value
         )
-
       if (!dni) {
         return
       }
-
       // ----------------------------------------------
       // Nombres (columnas C / D / E)
       // ----------------------------------------------
-
       const apellidoPaterno =
         String(row.getCell(3).value ?? '').trim()
-
       const apellidoMaterno =
         String(row.getCell(4).value ?? '').trim()
-
       const nombres =
         String(row.getCell(5).value ?? '').trim()
-
       const nombresPrevios =
         nombresPorDni.get(dni)
-
       nombresPorDni.set(
         dni,
         {
@@ -505,62 +530,50 @@ if (worksheetDias) {
             '',
         }
       )
-
       // ----------------------------------------------
       // CÓDIGO
       // ----------------------------------------------
-
       const codigo =
         String(
           row.getCell(
             COL_CODIGO
           ).value ?? ''
         ).trim()
-
       // ----------------------------------------------
       // DESCRIPCIÓN
       // ----------------------------------------------
-
       const descripcion =
         String(
           row.getCell(
             COL_DESCRIPCION
           ).value ?? ''
         ).trim()
-
       // ----------------------------------------------
       // CANTIDAD DE DÍAS
       // ----------------------------------------------
-
       const cantidadDias =
         toNumber(
           row.getCell(
             COL_CANTIDAD_DIAS
           ).value
         )
-
       // ----------------------------------------------
       // FECHA INICIAL
       // ----------------------------------------------
-
       const fechaInicio =
         row.getCell(
           COL_FECHA_INICIO
         ).value
-
       // ----------------------------------------------
       // FECHA FINAL
       // ----------------------------------------------
-
       const fechaFin =
         row.getCell(
           COL_FECHA_FIN
         ).value
-
       // ----------------------------------------------
       // Ignorar filas sin incidencia
       // ----------------------------------------------
-
       if (
         !descripcion &&
         cantidadDias === 0 &&
@@ -569,7 +582,6 @@ if (worksheetDias) {
       ) {
         return
       }
-
       const incidencia: IncidenciaImportada =
         {
           dni,
@@ -579,42 +591,33 @@ if (worksheetDias) {
           fechaInicio,
           fechaFin,
         }
-
       const incidenciasExistentes =
         incidenciasPorDni.get(
           dni
         ) ?? []
-
       incidenciasExistentes.push(
         incidencia
       )
-
       incidenciasPorDni.set(
         dni,
         incidenciasExistentes
       )
-
       totalIncidencias += 1
     }
   )
-
   console.log(
     'INCIDENCIAS EXTRAÍDAS:',
     totalIncidencias
   )
-
   console.log(
     'TRABAJADORES CON INCIDENCIAS:',
     incidenciasPorDni.size
   )
-
   // ----------------------------------------------
   // Mostrar las primeras incidencias
   // para comprobar que están bien extraídas
   // ----------------------------------------------
-
   let contador = 0
-
   for (
     const [
       dni,
@@ -625,33 +628,25 @@ if (worksheetDias) {
       `DNI ${dni}:`,
       incidencias
     )
-
     contador += 1
-
     if (contador >= 10) {
       break
     }
   }
 }
-
   // ==========================================================
   // BUSCAR FERIADOS
   // ==========================================================
-
   console.log(
     '======================================'
   )
-
   console.log(
     'BUSCANDO FERIADOS EN "DIAS"...'
   )
-
   let feriadosHeaderRow: number | null =
     null
-
   let feriadosHeaderMap =
     new Map<string, number>()
-
   worksheetDias.eachRow(
     (row, rowNumber) => {
       if (
@@ -659,17 +654,14 @@ if (worksheetDias) {
       ) {
         return
       }
-
       const posiblesHeaders =
         new Map<string, number>()
-
       row.eachCell(
         (cell, column) => {
           const header =
             normalizeHeader(
               cell.value
             )
-
           if (header) {
             posiblesHeaders.set(
               header,
@@ -678,12 +670,10 @@ if (worksheetDias) {
           }
         }
       )
-
       const tieneFecha =
         posiblesHeaders.has(
           'FECHA'
         )
-
       const tieneDescripcion =
         posiblesHeaders.has(
           'DESCRIPCION'
@@ -691,7 +681,6 @@ if (worksheetDias) {
         posiblesHeaders.has(
           'FERIADO'
         )
-
       if (
         tieneFecha &&
         tieneDescripcion
@@ -704,7 +693,6 @@ if (worksheetDias) {
       }
     }
   )
-
   if (
     feriadosHeaderRow !== null
   ) {
@@ -712,7 +700,6 @@ if (worksheetDias) {
       feriadosHeaderMap.get(
         'FECHA'
       )
-
     const descripcionColumn =
       feriadosHeaderMap.get(
         'DESCRIPCION'
@@ -720,7 +707,6 @@ if (worksheetDias) {
       feriadosHeaderMap.get(
         'FERIADO'
       )
-
     worksheetDias.eachRow(
       (row, rowNumber) => {
         if (
@@ -729,20 +715,16 @@ if (worksheetDias) {
         ) {
           return
         }
-
         if (!fechaColumn) {
           return
         }
-
         const fecha =
           row.getCell(
             fechaColumn
           ).value
-
         if (!fecha) {
           return
         }
-
         const descripcion =
           descripcionColumn
             ? String(
@@ -751,7 +733,6 @@ if (worksheetDias) {
                 ).value ?? ''
               ).trim()
             : ''
-
         feriadosImportados.push({
           fecha,
           descripcion,
@@ -777,7 +758,6 @@ if (worksheetDias) {
   // ==========================================================
   // GUARDAR INCIDENCIAS EN CADA TRABAJADOR
   // ==========================================================
-
   setTrabajadores(
     (current) =>
       current.map(
@@ -786,7 +766,6 @@ if (worksheetDias) {
             incidenciasPorDni.get(
               trabajador.dni
             )
-
           return {
             ...trabajador,
             incidencias:
@@ -795,39 +774,31 @@ if (worksheetDias) {
         }
       )
   )
-
   console.log(
     '======================================'
   )
-
   console.log(
     'EXTRACCIÓN DE DIAS TERMINADA'
   )
-
   console.log(
     'Días mensuales:',
     daysByDni.size
   )
-
   console.log(
     'Trabajadores con incidencias:',
     incidenciasPorDni.size
   )
-
   console.log(
     'Feriados:',
     feriadosImportados.length
   )
-
   console.log(
     '======================================'
   )
 }
-
   // ============================================================
   // PASO 8: COMPARAR LOS DNI CON LOS TRABAJADORES
   // ============================================================
-
   const noEncontrados =
     [
       ...daysByDni.keys(),
@@ -857,6 +828,14 @@ if (worksheetDias) {
         (trabajador) => {
           const clave =
   String(trabajador.dni).trim().padStart(8, '0')
+  console.log(
+  '[REM→DÍAS] Estado recibido:',
+  {
+    dni: clave,
+    tieneRemuneraciones: !!trabajador.remuneraciones,
+    mesesRemuneraciones: trabajador.mesesRemuneraciones,
+  }
+)
 
           const diasTrabajados =
   daysByDni.get(clave)
@@ -868,13 +847,56 @@ if (worksheetDias) {
             return trabajador
           }
 
-          return {
-            ...trabajador,
-            apellidoPaterno: trabajador.apellidoPaterno || infoNombres?.apellidoPaterno || '',
-            apellidoMaterno: trabajador.apellidoMaterno || infoNombres?.apellidoMaterno || '',
-            nombres: trabajador.nombres || infoNombres?.nombres || '',
-            ...(diasTrabajados ? { diasTrabajados } : {}),
-          }
+
+          console.log(
+  '[TRAZABILIDAD] Trabajador antes de actualizar DÍAS:',
+  trabajador.dni,
+  {
+    mesesRemuneraciones: trabajador.mesesRemuneraciones,
+    mesesDias: trabajador.mesesDias,
+  }
+)
+         const mesesDias = diasTrabajados
+  ? months.filter((mes) => diasTrabajados[mes] > 0)
+  : trabajador.mesesDias ?? []
+
+const mesesPresentes = Array.from(
+  new Set([
+    ...(trabajador.mesesRemuneraciones ?? []),
+    ...mesesDias,
+  ])
+)
+
+console.log(
+  '[TRAZABILIDAD] Trabajador después de consolidar:',
+  trabajador.dni,
+  {
+    mesesRemuneraciones: trabajador.mesesRemuneraciones,
+    mesesDias,
+    mesesPresentes,
+  }
+)
+
+return {
+  ...trabajador,
+  apellidoPaterno:
+    trabajador.apellidoPaterno ||
+    infoNombres?.apellidoPaterno ||
+    '',
+  apellidoMaterno:
+    trabajador.apellidoMaterno ||
+    infoNombres?.apellidoMaterno ||
+    '',
+  nombres:
+    trabajador.nombres ||
+    infoNombres?.nombres ||
+    '',
+  ...(diasTrabajados
+    ? { diasTrabajados }
+    : {}),
+  mesesDias,
+  mesesPresentes,
+}
         }
       )
 
@@ -890,16 +912,24 @@ if (worksheetDias) {
           (dni) => {
             const infoNombres = nombresPorDni.get(dni)
 
-            return {
-              dni,
-              apellidoPaterno: infoNombres?.apellidoPaterno ?? '',
-              apellidoMaterno: infoNombres?.apellidoMaterno ?? '',
-              nombres: infoNombres?.nombres ?? '',
-              fechaInicio: null,
-              fechaCese: null,
-              remuneraciones: MESES_EN_CERO,
-              diasTrabajados: daysByDni.get(dni)!,
-            }
+            const diasTrabajados = daysByDni.get(dni)!
+
+const mesesDias = months.filter(
+  (mes) => diasTrabajados[mes] > 0
+)
+
+return {
+  dni,
+  apellidoPaterno: infoNombres?.apellidoPaterno ?? '',
+  apellidoMaterno: infoNombres?.apellidoMaterno ?? '',
+  nombres: infoNombres?.nombres ?? '',
+  fechaInicio: null,
+  fechaCese: null,
+  remuneraciones: MESES_EN_CERO,
+  diasTrabajados,
+  mesesDias,
+  mesesPresentes: mesesDias,
+}
           }
         )
 
@@ -966,35 +996,79 @@ const worksheet = workbook.getWorksheet('REM')
     const fechaInicio = row.getCell(6).value
     const fechaCese = row.getCell(7).value
 
-    trabajadoresImportados.push({
-    dni: dniFinal,
-    apellidoPaterno,
-    apellidoMaterno,
-    nombres,
-    fechaInicio,
-    fechaCese,
+    const remuneraciones: MonthlyValues = {
+  enero: getExcelNumber(row.getCell(9).value),
+  febrero: getExcelNumber(row.getCell(10).value),
+  marzo: getExcelNumber(row.getCell(11).value),
+  abril: getExcelNumber(row.getCell(12).value),
+  mayo: getExcelNumber(row.getCell(13).value),
+  junio: getExcelNumber(row.getCell(14).value),
+  julio: getExcelNumber(row.getCell(15).value),
+  agosto: getExcelNumber(row.getCell(16).value),
+  septiembre: getExcelNumber(row.getCell(17).value),
+  octubre: getExcelNumber(row.getCell(18).value),
+  noviembre: getExcelNumber(row.getCell(19).value),
+  diciembre: getExcelNumber(row.getCell(20).value),
+  total: getExcelNumber(row.getCell(21).value),
+}
 
-    remuneraciones: {
-      enero: getExcelNumber(row.getCell(9).value),
-      febrero: getExcelNumber(row.getCell(10).value),
-      marzo: getExcelNumber(row.getCell(11).value),
-      abril: getExcelNumber(row.getCell(12).value),
-      mayo: getExcelNumber(row.getCell(13).value),
-      junio: getExcelNumber(row.getCell(14).value),
-      julio: getExcelNumber(row.getCell(15).value),
-      agosto: getExcelNumber(row.getCell(16).value),
-      septiembre: getExcelNumber(row.getCell(17).value),
-      octubre: getExcelNumber(row.getCell(18).value),
-      noviembre: getExcelNumber(row.getCell(19).value),
-      diciembre: getExcelNumber(row.getCell(20).value),
-      total: getExcelNumber(row.getCell(21).value),
-    },
-  })
-  })
+// Detectar los meses que realmente tienen remuneración registrada
+const mesesRemuneraciones = months.filter(
+  (mes) => remuneraciones[mes] > 0
+)
 
-  setTrabajadores(trabajadoresImportados)
+trabajadoresImportados.push({
+  dni: dniFinal,
+  apellidoPaterno,
+  apellidoMaterno,
+  nombres,
+  fechaInicio,
+  fechaCese,
+
+  remuneraciones,
+
+  mesesRemuneraciones,
+
+  // En esta etapa solo existe información REM.
+  // DÍAS se agregará cuando se importe el Excel de días.
+  mesesPresentes: mesesRemuneraciones,
+})
+  })
+  console.log(
+  '[TRAZABILIDAD REM] Trabajador importado antes de consolidar:',
+  trabajadoresImportados[0]?.dni,
+  {
+    remuneraciones: trabajadoresImportados[0]?.remuneraciones,
+    mesesRemuneraciones: trabajadoresImportados[0]?.mesesRemuneraciones,
+    mesesPresentes: trabajadoresImportados[0]?.mesesPresentes,
+  }
+)
+  setTrabajadores((current) => {
+  return trabajadoresImportados.map((rem) => {
+    const existente = current.find(
+      (trabajador) =>
+        String(trabajador.dni).trim().padStart(8, '0') === rem.dni
+    )
+
+    if (!existente) {
+      return rem
+    }
+
+    return {
+      ...existente,
+      ...rem,
+      diasTrabajados: existente.diasTrabajados,
+      mesesDias: existente.mesesDias,
+      mesesPresentes: Array.from(
+        new Set([
+          ...(rem.mesesRemuneraciones ?? []),
+          ...(existente.mesesDias ?? []),
+        ])
+      ),
+    }
+  })
+})
   setImportedFile(file.name)
-
   alert(
     `Excel leído correctamente.\n\nTrabajadores encontrados: ${trabajadoresImportados.length}`
   )
@@ -1005,32 +1079,24 @@ const worksheet = workbook.getWorksheet('REM')
         setLoading(false)
       }
     }
-
     const handleInputChange = (event: React.ChangeEvent<HTMLInputElement>) => {
       const file = event.target.files?.[0]
-
       if (file) {
         handleFile(file)
       }
-
       event.target.value = ''
     }
-
     return (
-
-      
       <Card className="shadow-none">
         <CardHeader className="flex flex-row items-start justify-between gap-4">
           <div>
             <CardTitle className="text-base">{title}</CardTitle>
             <CardDescription>{description}</CardDescription>
           </div>
-
           <Badge variant="outline">
             XLSX / CSV
           </Badge>
         </CardHeader>
-
         <CardContent>
     {!importedFile ? (
       <>
@@ -1041,7 +1107,6 @@ const worksheet = workbook.getWorksheet('REM')
           className="hidden"
           onChange={handleInputChange}
         />
-
         <button
           type="button"
           disabled={loading}
@@ -1049,15 +1114,12 @@ const worksheet = workbook.getWorksheet('REM')
           className="flex w-full flex-col items-center gap-3 rounded-2xl border border-dashed border-primary/40 bg-primary/5 px-6 py-9 text-center transition-colors hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-60"
         >
           <FileSpreadsheet className="size-8 text-primary" />
-
           <span className="font-medium">
             {loading ? 'Leyendo archivo...' : 'Arrastra el archivo aquí'}
           </span>
-
           <span className="text-sm text-muted-foreground">
             o selecciónalo desde tu dispositivo
           </span>
-
           <span className="rounded-lg border bg-background px-3 py-2 text-sm font-medium">
             {loading ? 'Procesando...' : 'Seleccionar archivo'}
           </span>
@@ -1065,25 +1127,21 @@ const worksheet = workbook.getWorksheet('REM')
       </>
     ) : (
       <div className="space-y-4">
-
         {/* Archivo cargado */}
         <div className="flex items-center justify-between rounded-2xl bg-muted/30 p-4">
           <div className="flex items-center gap-3">
             <div className="flex size-10 items-center justify-center rounded-xl bg-primary/15">
               <FileSpreadsheet className="size-5 text-primary" />
             </div>
-
             <div>
               <p className="font-medium">
                 {importedFile}
               </p>
-
               <p className="text-sm text-muted-foreground">
                 {isRemunerations ? trabajadores.length : diasImportados} trabajadores detectados · Mapeo automático disponible
               </p>
             </div>
           </div>
-
           <button
             type="button"
             onClick={() => inputRef.current?.click()}
@@ -1092,25 +1150,20 @@ const worksheet = workbook.getWorksheet('REM')
             Cambiar archivo
           </button>
         </div>
-
         {/* Resumen */}
         <div className="grid gap-3 md:grid-cols-3">
-
          <div className="rounded-2xl border p-4">
            <p className="text-sm text-muted-foreground">
              Trabajadores detectados
            </p>
-
            <p className="mt-2 text-2xl font-semibold">
              {isRemunerations ? trabajadores.length : diasImportados}
            </p>
          </div>
-
          <div className="rounded-2xl border p-4">
   <p className="text-sm text-muted-foreground">
     {isRemunerations ? 'Remuneración anual' : 'Días registrados'}
   </p>
-
   <p className="mt-2 text-2xl font-semibold">
     {isRemunerations && trabajadores.length > 0
       ? `S/ ${trabajadores
@@ -1128,34 +1181,26 @@ const worksheet = workbook.getWorksheet('REM')
         : '—'}
   </p>
 </div>
-
           <div className="rounded-2xl border p-4">
             <p className="text-sm text-muted-foreground">
               Observaciones
             </p>
-
             <p className="mt-2 text-2xl font-semibold">
               0
             </p>
           </div>
-
         </div>
-
   {/* Trabajadores */}
   <div className="overflow-hidden rounded-2xl border">
-
-    <div className="grid grid-cols-4 gap-4 border-b bg-muted/20 px-4 py-3 text-sm font-medium">
+    <div className={`grid gap-4 border-b bg-muted/20 px-4 py-3 text-sm font-medium ${isRemunerations ? 'grid-cols-4' : 'grid-cols-[minmax(0,1.5fr)_minmax(5.5rem,0.7fr)_minmax(6rem,0.8fr)_minmax(6rem,0.8fr)]'}`}>
       <span>Trabajador</span>
       <span>DNI</span>
       <span>Inicio</span>
       <span>Cese</span>
     </div>
-
     <div className="divide-y">
-
       {trabajadores.map((trabajador, index) => (
         <div key={trabajador.dni}>
-
           {/* FILA DEL TRABAJADOR */}
           <div
             onClick={() =>
@@ -1163,34 +1208,27 @@ const worksheet = workbook.getWorksheet('REM')
                 trabajadorSeleccionado === index ? null : index
               )
             }
-            className="grid grid-cols-4 gap-4 px-4 py-3 text-sm cursor-pointer hover:bg-muted/30"
+            className={`grid gap-4 px-4 py-3 text-sm cursor-pointer hover:bg-muted/30 ${isRemunerations ? 'grid-cols-4' : 'grid-cols-[minmax(0,1.5fr)_minmax(5.5rem,0.7fr)_minmax(6rem,0.8fr)_minmax(6rem,0.8fr)]'}`}
           >
-
-            <div>
+            <div className="min-w-0">
               <p className="font-medium">
                 {trabajador.apellidoPaterno}{" "}
                 {trabajador.apellidoMaterno}
               </p>
-
               <p className="text-xs text-muted-foreground">
                 {trabajador.nombres}
               </p>
             </div>
-
-            <span>
+            <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">
               {trabajador.dni}
             </span>
-
-            <span>
+            <span className="min-w-0 whitespace-nowrap">
               {formatExcelDate(trabajador.fechaInicio)}
             </span>
-
-            <span>
+            <span className="min-w-0 whitespace-nowrap">
               {formatExcelDate(trabajador.fechaCese)}
             </span>
-
           </div>
-
           {/* DETALLE DEL TRABAJADOR */}
           {trabajadorSeleccionado === index && (
             <div className="border-t bg-muted/10 px-4 py-4">
@@ -1221,11 +1259,9 @@ const worksheet = workbook.getWorksheet('REM')
                       key={mes}
                       className="rounded-lg border border-border/60 bg-background p-3"
                     >
-
                       <p className="text-xs text-muted-foreground">
                         {mes}
                       </p>
-
                       <p className="mt-1 text-sm font-semibold">
                         S/{" "}
                         {Number(monto).toLocaleString("es-PE", {
@@ -1233,18 +1269,13 @@ const worksheet = workbook.getWorksheet('REM')
                           maximumFractionDigits: 2,
                         })}
                       </p>
-
                     </div>
                   ))}
-
                 </div>
-
               <div className="mt-3 flex items-center justify-between rounded-lg border border-primary/20 bg-primary/5 p-3"> 
-
                 <span className="text-sm font-medium">
                   Remuneración total anual
                 </span>
-
                 <span className="font-semibold text-primary">
                   S/{" "}
                   {Number(trabajador.remuneraciones.total).toLocaleString(
@@ -1255,14 +1286,11 @@ const worksheet = workbook.getWorksheet('REM')
                     }
                   )}
                 </span>
-
               </div>
     </>
   )}
-
               {!isRemunerations && trabajador.diasTrabajados && (
   <div className="mt-5 rounded-xl border border-border/60 bg-muted/10 p-4">
-
     <div className="mb-4 flex items-center justify-between">
       <div>
         <p className="text-sm font-semibold">
@@ -1272,15 +1300,141 @@ const worksheet = workbook.getWorksheet('REM')
           Resumen mensual registrado
         </p>
       </div>
-
       <div className="rounded-lg border border-primary/20 bg-primary/10 px-3 py-1.5">
         <span className="text-sm font-semibold text-primary">
           {trabajador.diasTrabajados.total} días
         </span>
       </div>
     </div>
+    {/* ============================================================
+    CONSOLIDADO DE MESES DEL TRABAJADOR
+    ============================================================ */}
+{(trabajador.mesesRemuneraciones ||
+  trabajador.mesesDias ||
+  trabajador.mesesPresentes) && (
+  <div className="mt-5 rounded-xl border border-border/60 bg-muted/10 p-4">
 
-    <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-12">
+    <div className="mb-4">
+      <p className="text-sm font-semibold">
+        Meses registrados
+      </p>
+
+      <p className="text-xs text-muted-foreground">
+        Trazabilidad de la información encontrada en Remuneraciones y Días laborados
+      </p>
+    </div>
+
+    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
+      {[
+        ['Enero', 'enero'],
+        ['Febrero', 'febrero'],
+        ['Marzo', 'marzo'],
+        ['Abril', 'abril'],
+        ['Mayo', 'mayo'],
+        ['Junio', 'junio'],
+        ['Julio', 'julio'],
+        ['Agosto', 'agosto'],
+        ['Septiembre', 'septiembre'],
+        ['Octubre', 'octubre'],
+        ['Noviembre', 'noviembre'],
+        ['Diciembre', 'diciembre'],
+      ].map(([nombre, mes]) => {
+
+        const tieneRem =
+          trabajador.mesesRemuneraciones?.includes(mes) ?? false
+
+        const tieneDias =
+          trabajador.mesesDias?.includes(mes) ?? false
+
+        const tieneInformacion =
+          tieneRem || tieneDias
+
+        return (
+          <div
+            key={mes}
+            className={`rounded-lg border p-3 ${
+              tieneInformacion
+                ? 'border-primary/20 bg-primary/5'
+                : 'border-border/60 bg-background'
+            }`}
+          >
+            <p className="text-xs font-medium">
+              {nombre}
+            </p>
+
+            <div className="mt-2 space-y-1.5">
+
+              <div className="flex items-center justify-between text-[10px]">
+                <span className="text-muted-foreground">
+                  REM
+                </span>
+
+                <span
+                  className={
+                    tieneRem
+                      ? 'font-semibold text-primary'
+                      : 'text-muted-foreground'
+                  }
+                >
+                  {tieneRem ? '✓' : '—'}
+                </span>
+              </div>
+
+              <div className="flex items-center justify-between text-[10px]">
+                <span className="text-muted-foreground">
+                  DÍAS
+                </span>
+
+                <span
+                  className={
+                    tieneDias
+                      ? 'font-semibold text-primary'
+                      : 'text-muted-foreground'
+                  }
+                >
+                  {tieneDias ? '✓' : '—'}
+                </span>
+              </div>
+
+            </div>
+          </div>
+        )
+      })}
+    </div>
+
+    <div className="mt-4 flex flex-wrap gap-2">
+
+      <div className="rounded-lg border border-border/60 bg-background px-3 py-2">
+        <span className="text-[11px] text-muted-foreground">
+          REM
+        </span>
+        <span className="ml-2 text-xs font-semibold">
+          {trabajador.mesesRemuneraciones?.length ?? 0} meses
+        </span>
+      </div>
+
+      <div className="rounded-lg border border-border/60 bg-background px-3 py-2">
+        <span className="text-[11px] text-muted-foreground">
+          DÍAS
+        </span>
+        <span className="ml-2 text-xs font-semibold">
+          {trabajador.mesesDias?.length ?? 0} meses
+        </span>
+      </div>
+
+      <div className="rounded-lg border border-border/60 bg-background px-3 py-2">
+        <span className="text-[11px] text-muted-foreground">
+          CONSOLIDADO
+        </span>
+        <span className="ml-2 text-xs font-semibold text-primary">
+          {trabajador.mesesPresentes?.length ?? 0} meses
+        </span>
+      </div>
+
+    </div>
+  </div>
+)}
+    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-6">
       {[
         ['Enero', trabajador.diasTrabajados.enero],
         ['Febrero', trabajador.diasTrabajados.febrero],
@@ -1297,46 +1451,62 @@ const worksheet = workbook.getWorksheet('REM')
       ].map(([mes, dias]) => (
         <div
           key={mes}
-          className="rounded-lg border border-border/60 bg-background p-3 text-center transition-colors hover:border-primary/30 hover:bg-primary/5"
+          className="min-w-0 rounded-lg border border-border/60 bg-background p-3 text-center transition-colors hover:border-primary/30 hover:bg-primary/5"
         >
           <p className="text-[11px] font-medium text-muted-foreground">
             {mes}
           </p>
-
           <p className="mt-1 text-lg font-semibold">
             {dias}
           </p>
-
           <p className="text-[10px] text-muted-foreground">
             días
           </p>
         </div>
       ))}
     </div>
-
     <div className="mt-3 flex items-center justify-between rounded-lg border border-border/60 bg-background px-4 py-3">
       <span className="text-xs font-medium text-muted-foreground">
         Total anual registrado
       </span>
-
       <span className="text-sm font-bold text-primary">
         {trabajador.diasTrabajados.total} días
       </span>
     </div>
-
+    {trabajador.incidencias && trabajador.incidencias.length > 0 && (
+      <div className="mt-4 border-t border-border/60 pt-4">
+        <p className="text-sm font-semibold">Incidencias</p>
+        <p className="mt-1 text-xs text-muted-foreground">
+          Ausencias y licencias registradas en el archivo importado
+        </p>
+        <div className="mt-3 space-y-2">
+          {trabajador.incidencias.map((incidencia, incidenciaIndex) => (
+            <div
+              key={`${incidencia.codigo}-${incidenciaIndex}`}
+              className="grid gap-2 rounded-lg border border-border/60 bg-background p-3 text-sm sm:grid-cols-[minmax(0,1fr)_auto_auto] sm:items-center"
+            >
+              <span className="min-w-0 font-medium">
+                {incidencia.descripcion || incidencia.codigo || 'Incidencia registrada'}
+              </span>
+              <span className="whitespace-nowrap text-muted-foreground">
+                {formatExcelDate(incidencia.fechaInicio)} - {formatExcelDate(incidencia.fechaFin)}
+              </span>
+              <span className="whitespace-nowrap font-semibold text-primary">
+                {incidencia.cantidadDias} días
+              </span>
+            </div>
+          ))}
+        </div>
+      </div>
+    )}
   </div>
 )}
-
             </div>
           )}
-
         </div>
       ))}
-
     </div>
-
   </div>
-
       </div>
     )}
   </CardContent>
@@ -1353,7 +1523,6 @@ const worksheet = workbook.getWorksheet('REM')
     <Check className="mr-2 size-4" />Guardar</Button>
   <Button size="sm" onClick={onRun}>
     <Play className="mr-2 size-4" />Ejecutar</Button></div>} />
-
     {/* Flujo del cálculo */}
 <div className="rounded-xl border border-border/60 bg-card p-5">
   <div className="mb-5 flex items-center justify-between">
@@ -1363,12 +1532,10 @@ const worksheet = workbook.getWorksheet('REM')
         Proceso de cálculo de utilidades
       </p>
     </div>
-
     <span className="text-xs font-medium text-primary">
       Paso 1 de 5
     </span>
   </div>
-
   <div className="flex items-center">
     {[
       "Carga",
@@ -1388,7 +1555,6 @@ const worksheet = workbook.getWorksheet('REM')
           >
             {index + 1}
           </div>
-
           <span
             className={`mt-2 text-center text-xs font-medium ${
               index === 0
@@ -1399,7 +1565,6 @@ const worksheet = workbook.getWorksheet('REM')
             {label}
           </span>
         </div>
-
         {index < 4 && (
           <div className="mx-2 h-px flex-1 bg-border" />
         )}
@@ -1407,7 +1572,6 @@ const worksheet = workbook.getWorksheet('REM')
     ))}
   </div>
 </div>
-
   <Card className="border-primary/30 bg-primary/5">
     <CardContent className="flex flex-col gap-4 p-5 sm:flex-row sm:items-center">
     <div className="flex size-11 items-center justify-center rounded-xl bg-primary/15 text-primary"><Upload /></div>
@@ -1422,14 +1586,12 @@ const worksheet = workbook.getWorksheet('REM')
     trabajadores={trabajadores}
     setTrabajadores={setTrabajadores}
   />
-
   <ImportCard
     kind="worked-days"
     trabajadores={trabajadoresDias}
     setTrabajadores={setTrabajadoresDias}
   />
   </div>
-
   <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
   <Kpi
     label="Fondo legal"
@@ -1438,14 +1600,12 @@ const worksheet = workbook.getWorksheet('REM')
     icon={ShieldCheck}
     tone="teal"
   />
-
   <Kpi
     label="A distribuir"
     value={money.format(totals.distributed)}
     hint="50% días · 50% remuneración"
     icon={ArrowDownToLine}
   />
-
   <Kpi
     label="Trabajadores"
     value={number.format(results.length)}
@@ -1453,7 +1613,6 @@ const worksheet = workbook.getWorksheet('REM')
     icon={Users}
     tone="amber"
   />
-
   <Kpi
     label="Remanente"
     value={money.format(totals.remainder)}
@@ -1462,23 +1621,18 @@ const worksheet = workbook.getWorksheet('REM')
     tone="rose"
   />
   </div>
-
   {errors.length > 0 && (
     <Alert variant="destructive">
       <AlertCircle className="size-4" />
-
       <AlertTitle>
         Validaciones pendientes
       </AlertTitle>
-
       <AlertDescription>
         {errors.join(' ')}
       </AlertDescription>
     </Alert>
   )}
-
   <div className="grid gap-5 xl:grid-cols-[1.15fr_.85fr]">
-
     {/* RESUMEN DEL FONDO */}
     <Card>
       <CardHeader>
@@ -1487,12 +1641,10 @@ const worksheet = workbook.getWorksheet('REM')
             <CardTitle>
               Resumen del fondo
             </CardTitle>
-
             <CardDescription>
               Distribución legal aplicable al ejercicio 2026
             </CardDescription>
           </div>
-
           {errors.length === 0 && (
             <Badge
               variant="secondary"
@@ -1503,114 +1655,89 @@ const worksheet = workbook.getWorksheet('REM')
           )}
         </div>
       </CardHeader>
-
       <CardContent>
         <div className="flex flex-col gap-5">
-
           <div className="grid gap-4 sm:grid-cols-3">
-
             <div>
               <p className="text-xs text-muted-foreground">
                 Renta neta
               </p>
-
               <p className="mt-1 text-lg font-semibold">
                 {money.format(parameters.income)}
               </p>
             </div>
-
             <div>
               <p className="text-xs text-muted-foreground">
                 Porcentaje legal
               </p>
-
               <p className="mt-1 text-lg font-semibold">
                 {parameters.legalPercent}%
               </p>
             </div>
-
             <div>
               <p className="text-xs text-muted-foreground">
                 Fondo total
               </p>
-
               <p className="mt-1 text-lg font-semibold text-primary">
                 {money.format(calculateFund(parameters))}
               </p>
             </div>
-
           </div>
-
           <Separator />
-
           <div>
             <div className="mb-2 flex justify-between text-sm">
               <span>
                 Distribuido
               </span>
-
               <span className="font-medium">
                 {totals.fund > 0 ? ((totals.distributed / totals.fund) * 100).toFixed(1) : '0.0'}%
               </span>
             </div>
-
             <Progress
               value={totals.fund > 0 ? (totals.distributed / totals.fund) * 100 : 0}
               className="h-2"
             />
-
             <div className="mt-2 flex justify-between text-xs text-muted-foreground">
               <span>
                 {money.format(totals.distributed)}
               </span>
-
               <span>
                 Remanente {money.format(totals.remainder)}
               </span>
             </div>
           </div>
-
           <div className="rounded-lg border border-border/70 bg-muted/30 p-4">
             <div className="flex items-start gap-3">
-
               <div className="rounded-md bg-primary/10 p-2 text-primary">
                 <Calculator className="size-4" />
               </div>
-
               <div>
                 <p className="text-sm font-medium">
                   Fórmula de distribución
                 </p>
-
                 <p className="mt-1 text-xs leading-5 text-muted-foreground">
                   50% se asigna según días laborados y 50% según
                   remuneración computable. Cada resultado está sujeto
                   al tope de 18 remuneraciones.
                 </p>
               </div>
-
             </div>
           </div>
-
         </div>
       </CardContent>
     </Card>
-
     {/* TOP 5 RESULTADOS */}
     <Card>
       <CardHeader>
         <CardTitle>
           Top 5 resultados
         </CardTitle>
-
         <CardDescription>
           Mayor monto individual calculado
         </CardDescription>
       </CardHeader>
-
       <CardContent>
         <div className="flex flex-col gap-4">
-
           {top.map((result, index) => (
             <button
               key={result.id}
@@ -1619,14 +1746,11 @@ const worksheet = workbook.getWorksheet('REM')
             >
               <span className="flex size-6 items-center justify-center rounded-full bg-muted text-xs font-semibold">
                 {index + 1}
-              </span>
-
+             </span>
               <div className="min-w-0 flex-1">
-
                 <p className="truncate text-sm font-medium">
                   {result.name}
                 </p>
-
                 <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-muted">
                   <div
                     className="h-full rounded-full bg-primary"
@@ -1638,37 +1762,28 @@ const worksheet = workbook.getWorksheet('REM')
                     }}
                   />
                 </div>
-
               </div>
-
               <span className="text-sm font-semibold">
                 {money.format(result.finalAmount)}
               </span>
             </button>
           ))}
-
         </div>
       </CardContent>
     </Card>
-
   </div>
-
   {/* DISTRIBUCIÓN POR TRABAJADOR */}
   <Card>
     <CardHeader>
-
       <div className="flex items-center justify-between">
-
         <div>
           <CardTitle>
             Distribución por trabajador
           </CardTitle>
-
           <CardDescription>
             Vista previa de los resultados calculados
           </CardDescription>
         </div>
-
         <Button
           variant="outline"
           size="sm"
@@ -1676,93 +1791,64 @@ const worksheet = workbook.getWorksheet('REM')
           <Download className="mr-2 size-4" />
           Exportar
         </Button>
-
       </div>
-
     </CardHeader>
-
     <CardContent>
-
       <div className="overflow-x-auto">
-
         <Table>
-
           <TableHeader>
             <TableRow>
-
               <TableHead>
                 Trabajador
               </TableHead>
-
               <TableHead>
                 Días
               </TableHead>
-
               <TableHead>
                 Remuneración
               </TableHead>
-
               <TableHead className="text-right">
                 Preliminar
               </TableHead>
-
               <TableHead className="text-right">
                 Final
               </TableHead>
-
             </TableRow>
           </TableHeader>
-
           <TableBody>
-
             {results.slice(0, 6).map((result) => (
               <TableRow
                 key={result.id}
                 className="cursor-pointer"
                 onClick={() => onSelect(result)}
               >
-
                 <TableCell>
-
                   <div>
-
                     <p className="font-medium">
                       {result.name}
                     </p>
-
                     <p className="text-xs text-muted-foreground">
                       {result.code} · {result.department}
                     </p>
-
                   </div>
-
                 </TableCell>
-
                 <TableCell>
                   {number.format(result.days)}
                 </TableCell>
-
                 <TableCell>
                   {money.format(result.remuneration)}
                 </TableCell>
-
                 <TableCell className="text-right">
                   {money.format(result.preliminary)}
                 </TableCell>
-
-                <TableCell className="text-right font-semibold text-primary">
+               <TableCell className="text-right font-semibold text-primary">
                   {money.format(result.finalAmount)}
                 </TableCell>
-
               </TableRow>
             ))}
-
           </TableBody>
-
         </Table>
-
       </div>
-
     </CardContent>
   </Card>
   </div>
