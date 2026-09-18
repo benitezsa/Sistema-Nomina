@@ -1,16 +1,32 @@
 'use client'
 
-import { Clock3, Download } from 'lucide-react'
+import { Clock3, Download, Loader2 } from 'lucide-react'
+import { useState } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { auditLogs, versions } from '@/lib/utilities-data'
+import { exportBitacora } from '@/lib/report-export'
 
 function SectionTitle({ eyebrow, title, description, action }: { eyebrow?: string; title: string; description?: string; action?: React.ReactNode }) { return <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between"><div><p className="mb-1 text-xs font-semibold uppercase tracking-[0.18em] text-primary">{eyebrow}</p><h1 className="text-2xl font-semibold tracking-tight text-foreground sm:text-3xl">{title}</h1>{description && <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">{description}</p>}</div>{action}</div> }
 
-export function AuditView({ onNotify }: { onNotify: (m: string) => void }) { return <div className="flex flex-col gap-7">
-    <SectionTitle eyebrow="Trazabilidad" title="Auditoría" description="Consulta la bitácora de cambios y versiones del cálculo." action={<Button variant="outline" onClick={() => onNotify('Exportando bitácora')}>
-        <Download className="mr-2 size-4" />Exportar bitácora</Button>} />
+export function AuditView({ onNotify }: { onNotify: (m: string) => void }) {
+  const [busy, setBusy] = useState(false)
+  const handleExport = async () => {
+    if (busy) return
+    setBusy(true)
+    try {
+      await exportBitacora(auditLogs, versions)
+      onNotify('Bitácora exportada (Excel)')
+    } catch {
+      onNotify('No se pudo exportar la bitácora')
+    } finally {
+      setBusy(false)
+    }
+  }
+  return <div className="flex flex-col gap-7">
+    <SectionTitle eyebrow="Trazabilidad" title="Auditoría" description="Consulta la bitácora de cambios y versiones del cálculo." action={<Button variant="outline" onClick={handleExport} disabled={busy}>
+        {busy ? <Loader2 className="mr-2 size-4 animate-spin" /> : <Download className="mr-2 size-4" />}Exportar bitácora</Button>} />
         <div className="grid gap-5 lg:grid-cols-[1.3fr_.7fr]">
             <Card>
                 <CardHeader>

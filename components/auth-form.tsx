@@ -2,16 +2,18 @@
 
 import { FormEvent, useState } from 'react'
 import { useRouter } from 'next/navigation'
+import { useAuth } from '@/lib/auth-context'
 
 export function AuthForm() {
   const router = useRouter()
+  const { login } = useAuth()
 
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
 
     setError('')
@@ -23,12 +25,15 @@ export function AuthForm() {
 
     setLoading(true)
 
-    // Inicio de sesión temporal.
-    // La autenticación real se conectará posteriormente.
-  setTimeout(() => {
-  router.push('/')
-  router.refresh()
-}, 500)
+    try {
+      await login(email, password)
+      router.push('/')
+      router.refresh()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'No se pudo iniciar sesión.')
+    } finally {
+      setLoading(false)
+    }
   }
 
   return (

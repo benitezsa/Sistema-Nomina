@@ -20,8 +20,13 @@ export function DashboardView({ companies, results, onNavigate }: Props) {
 
   return <div className="flex flex-col gap-6">
     <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
-      <div><h1 className="text-3xl font-semibold tracking-tight">Bienvenido</h1><p className="mt-2 text-muted-foreground">Este es el estado de tus operaciones de nómina.</p></div>
-      <div className="flex flex-wrap gap-2"><Button variant="outline" onClick={() => onNavigate('Empresas')}><Plus data-icon="inline-start" />Nueva empresa</Button><Button onClick={() => onNavigate('Cálculo')}><Calculator data-icon="inline-start" />Nuevo cálculo</Button></div>
+      <div><h1 className="text-3xl font-semibold tracking-tight">Bienvenido</h1>
+      <p className="mt-2 text-muted-foreground">Este es el estado de tus operaciones de nómina.</p>
+      </div>
+      <div className="flex flex-wrap gap-2"><Button variant="outline" onClick={() => onNavigate('Empresas')}>
+        <Plus data-icon="inline-start" />Nueva empresa</Button>
+      <Button onClick={() => onNavigate('Cálculo')}>
+        <Calculator data-icon="inline-start" />Nuevo cálculo</Button></div>
     </div>
     <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
       <Metric label="Empresas activas" value={String(activeCompanies)} detail="Sin información disponible" icon={BarChart3} />
@@ -38,7 +43,7 @@ export function DashboardView({ companies, results, onNavigate }: Props) {
             </div>
             <Badge variant="secondary">Esta semana</Badge>
             </CardHeader>
-            <CardContent className="flex flex-col gap-3">{tasks.length === 0 && <p className="text-sm text-muted-foreground">Sin tareas pendientes.</p>}{tasks.map((task) => <button key={task.title} className="group flex items-center gap-4 rounded-lg border border-border/70 bg-muted/20 p-4 text-left transition-colors hover:bg-accent" onClick={() => onNavigate('Cálculo')}>
+<CardContent className="flex flex-col gap-3">{tasks.length === 0 && <p className="text-sm text-muted-foreground">Sin tareas pendientes.</p>}{tasks.map((task) => <button key={task.title} className="group flex items-center gap-4 rounded-lg border border-border/70 bg-muted/20 p-4 text-left transition-colors hover:bg-accent" onClick={() => onNavigate('Cálculo')}>
             <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-background text-primary">
               <FileSpreadsheet />
               </div>
@@ -68,7 +73,10 @@ export function DashboardView({ companies, results, onNavigate }: Props) {
           </div>)}</CardContent>
           </Card>
     </div>
-    <Card><CardHeader><CardTitle>Acciones rápidas</CardTitle><p className="mt-1 text-sm text-muted-foreground">Continúa donde lo dejaste</p>
+    <Card>
+      <CardHeader>
+        <CardTitle>Acciones rápidas</CardTitle>
+        <p className="mt-1 text-sm text-muted-foreground">Continúa donde lo dejaste</p>
     </CardHeader>
     <CardContent className="grid gap-3 sm:grid-cols-3">
       <QuickAction icon={Upload} title="Importar trabajadores" onClick={() => onNavigate('Trabajadores')} />

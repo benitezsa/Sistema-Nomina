@@ -11,6 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { companyClients } from '@/lib/utilities-data'
+import { useSettings } from '@/lib/settings-context'
 import type { CompanyClient } from './types'
 
 const statusStyle: Record<string, string> = {
@@ -20,6 +21,15 @@ const statusStyle: Record<string, string> = {
 }
 
 const money = new Intl.NumberFormat('es-PE')
+
+const rubroOptions = [
+  { value: 'Pesquera', label: 'Empresas pesqueras', porcentaje: '10%' },
+  { value: 'Telecomunicaciones', label: 'Empresas de telecomunicaciones', porcentaje: '10%' },
+  { value: 'Industrial', label: 'Empresas industriales', porcentaje: '10%' },
+  { value: 'Minera', label: 'Empresas mineras', porcentaje: '8%' },
+  { value: 'Comercio', label: 'Comercio y restaurantes', porcentaje: '8%' },
+  { value: 'Otras', label: 'Otras actividades', porcentaje: '5%' },
+]
 
 function Status({ value }: { value: string }) {
   return (
@@ -73,27 +83,89 @@ export function CompaniesView({
   const [status, setStatus] = useState('Todos')
   const [selected, setSelected] = useState<CompanyClient | null>(null)
   const [dialogOpen, setDialogOpen] = useState(false)
+  const [rubro, setRubro] = useState<string>('')
+  const [companies, setCompanies] = useState<CompanyClient[]>(companyClients)
+  const [form, setForm] = useState({ legalName: '', ruc: '', tradeName: '', contact: '' })
+
+  const { setCompany, updateParameters } = useSettings()
+
+  const porcentajeDeRubro = (activity: string) =>
+    rubroOptions.find((option) => option.label === activity)?.porcentaje ?? null
+
+  const activarEmpresa = (item: CompanyClient) => {
+    const porcentaje = porcentajeDeRubro(item.activity)
+    const number = porcentaje ? Number.parseFloat(porcentaje) : null
+
+    setCompany({
+      id: item.id,
+      name: item.legalName,
+      ruc: item.ruc,
+      activity: item.activity,
+      address: item.address,
+    })
+
+    if (number) {
+      updateParameters({ legalPercent: number })
+    }
+
+    return number
+  }
+
+  const porcentajeAutomatico = useMemo(
+    () => rubroOptions.find((option) => option.value === rubro)?.porcentaje ?? '',
+    [rubro],
+  )
 
   const filtered = useMemo(
     () =>
-      companyClients.filter(
+      companies.filter(
         (item) =>
           `${item.legalName} ${item.tradeName} ${item.ruc} ${item.contact}`
             .toLowerCase()
             .includes(query.toLowerCase()) &&
           (status === 'Todos' || item.status === status),
       ),
-    [query, status],
+    [query, status, companies],
   )
 
-  const active = companyClients.filter(
+  const active = companies.filter(
     (item) => item.status === 'Activo',
   ).length
 
-  const employees = companyClients.reduce(
+  const employees = companies.reduce(
     (sum, item) => sum + item.employees,
     0,
   )
+
+  const registerCompany = () => {
+    if (!form.legalName.trim() || !form.ruc.trim()) {
+      onNotify('Razón social y RUC son obligatorios')
+      return
+    }
+
+    const next: CompanyClient = {
+      id: `emp-${Date.now()}`,
+      legalName: form.legalName.trim(),
+      tradeName: form.tradeName.trim() || form.legalName.trim(),
+      ruc: form.ruc.trim(),
+      activity:
+        rubroOptions.find((option) => option.value === rubro)?.label || rubro || 'Sin rubro',
+      contact: form.contact.trim(),
+      role: 'Contacto principal',
+      phone: '',
+      email: '',
+      address: '',
+      status: 'Pendiente',
+      employees: 0,
+      lastExercise: 0,
+    }
+
+    setCompanies((prev) => [next, ...prev])
+    setForm({ legalName: '', ruc: '', tradeName: '', contact: '' })
+    setRubro('')
+    setDialogOpen(false)
+    onNotify('Empresa registrada en el Directorio de empresas')
+  }
 
   return (
     <div className="flex flex-col gap-7">
@@ -122,7 +194,7 @@ export function CompaniesView({
       <div className="grid gap-4 sm:grid-cols-3">
         <Kpi
           label="Empresas registradas"
-          value={money.format(companyClients.length)}
+          value={money.format(companies.length)}
           hint="Clientes en la plataforma"
           icon={Building2}
         />
@@ -245,9 +317,14 @@ export function CompaniesView({
   variant="outline"
   size="sm"
  onClick={() => {
+  const pct = activarEmpresa(item)
   localStorage.setItem('utilities-modules-unlocked', 'true')
   onShowAllModules()
-  onNotify(`Módulos habilitados para ${item.legalName}`)
+  onNotify(
+    pct
+      ? `Módulos habilitados para ${item.legalName} · ${pct} de distribución aplicado`
+      : `Módulos habilitados para ${item.legalName}`
+  )
 }}
 >
   Detalles
@@ -310,6 +387,8 @@ export function CompaniesView({
                 id="legalName"
                 className="mt-2"
                 placeholder="Ingrese la razón social"
+                value={form.legalName}
+                onChange={(event) => setForm((prev) => ({ ...prev, legalName: event.target.value }))}
               />
             </div>
 
@@ -322,6 +401,8 @@ export function CompaniesView({
                 id="ruc"
                 className="mt-2"
                 placeholder="Ingrese el RUC"
+                value={form.ruc}
+                onChange={(event) => setForm((prev) => ({ ...prev, ruc: event.target.value }))}
               />
             </div>
 
@@ -337,6 +418,8 @@ export function CompaniesView({
                 id="tradeName"
                 className="mt-2"
                 placeholder="Nombre comercial"
+                value={form.tradeName}
+                onChange={(event) => setForm((prev) => ({ ...prev, tradeName: event.target.value }))}
               />
             </div>
 
@@ -352,6 +435,45 @@ export function CompaniesView({
                 id="contact"
                 className="mt-2"
                 placeholder="Nombre y cargo"
+                value={form.contact}
+                onChange={(event) => setForm((prev) => ({ ...prev, contact: event.target.value }))}
+              />
+            </div>
+
+            <div className="sm:col-span-2">
+              <label className="text-sm font-medium" htmlFor="rubro">
+                Rubro al que pertenece
+              </label>
+
+              <Select value={rubro} onValueChange={(value) => setRubro(value ?? '')}>
+                <SelectTrigger id="rubro" className="mt-2">
+                  <SelectValue placeholder="Seleccione el rubro" />
+                </SelectTrigger>
+
+                <SelectContent>
+                  {rubroOptions.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="sm:col-span-2">
+              <label
+                className="text-sm font-medium"
+                htmlFor="porcentaje"
+              >
+                Porcentaje de participación
+              </label>
+
+              <Input
+                id="porcentaje"
+                className="mt-2"
+                value={porcentajeAutomatico}
+                placeholder="Se completa automáticamente"
+                disabled
               />
             </div>
           </div>
@@ -365,10 +487,7 @@ export function CompaniesView({
             </Button>
 
             <Button
-              onClick={() => {
-                setDialogOpen(false)
-                onNotify('Empresa creada en estado pendiente')
-              }}
+              onClick={registerCompany}
             >
               Guardar empresa
             </Button>

@@ -1,5 +1,6 @@
 'use client'
 
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Save, ShieldCheck } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
@@ -11,7 +12,7 @@ import {
   CardTitle,
 } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
-import { company } from '@/lib/utilities-data'
+import { useSettings } from '@/lib/settings-context'
 
 function StatusBadge({
   type,
@@ -77,6 +78,8 @@ function ConfigField({
   suffix,
   status,
   help,
+  onChange,
+  disabled,
 }: {
   label: string
   value: string
@@ -84,6 +87,8 @@ function ConfigField({
   suffix?: string
   status?: 'configurable' | 'confirmado' | 'por-validar'
   help?: string
+  onChange?: (value: string) => void
+  disabled?: boolean
 }) {
   return (
     <div className="space-y-2.5">
@@ -103,11 +108,14 @@ function ConfigField({
         )}
 
         <Input
-          type="number"
-          defaultValue={value}
+          type="text"
+          inputMode="decimal"
+          value={value}
+          onChange={(event) => onChange?.(event.target.value)}
+          disabled={disabled}
           className={`h-9 bg-background/40 text-sm ${
             prefix ? 'pl-9' : ''
-          } ${suffix ? 'pr-12' : ''}`}
+          } ${suffix ? 'pr-12' : ''} ${disabled ? 'opacity-70' : ''}`}
         />
 
         {suffix && (
@@ -131,6 +139,137 @@ export function ConfigurationView({
 }: {
   onNotify: (m: string) => void
 }) {
+  const ANIO_EJERCICIO = 2026
+
+  const { company, parameters, updateParameters } = useSettings()
+
+  const [income, setIncome] = useState(
+    parameters.income > 0 ? String(parameters.income) : '',
+  )
+
+  const editado = useRef(false)
+
+  useEffect(() => {
+    setIncome(parameters.income > 0 ? String(parameters.income) : '')
+  }, [parameters.income])
+
+  useEffect(() => {
+    const empresaId = Number(company.id)
+
+    if (!empresaId) return
+
+    let activo = true
+
+    fetch(`/api/ejercicios?empresa_id=${empresaId}&anio=${ANIO_EJERCICIO}`)
+      .then((response) => response.json())
+      .then((data) => {
+        if (!activo) return
+
+        if (!data?.existe || !data.ejercicio) {
+          setIncome('')
+          return
+        }
+
+        const renta = Number(data.ejercicio.renta_neta)
+        const porcentaje = Number(data.ejercicio.porcentaje_distribucion)
+
+        setIncome(renta > 0 ? String(renta) : '')
+        updateParameters({ income: renta, legalPercent: porcentaje })
+      })
+      .catch(() => {})
+
+    return () => {
+      activo = false
+    }
+  }, [company.id, updateParameters])
+
+  const legalPercent = String(parameters.legalPercent)
+
+  const sanitizeMoney = useCallback(
+    (value: string) =>
+      String(value ?? '')
+        .replace(/[^\d.]/g, '')
+        .replace(/(\..*)\./g, '$1'),
+    [],
+  )
+
+  const montoTotal =
+    Number(sanitizeMoney(income)) > 0 && Number(legalPercent) > 0
+      ? Number(sanitizeMoney(income)) * (Number(legalPercent) / 100)
+      : 0
+
+  const formatMoney = (value: number) =>
+    value.toLocaleString('es-PE', {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    })
+
+  const montoDias = montoTotal > 0 ? montoTotal / 2 : 0
+  const montoRemuneraciones = montoTotal > 0 ? montoTotal / 2 : 0
+
+  const guardarValores = useCallback(async (): Promise<boolean> => {
+    const empresaId = Number(company.id)
+
+    if (!empresaId) return false
+
+    const renta = Number(sanitizeMoney(income))
+    const porcentaje = Number(sanitizeMoney(legalPercent))
+
+    if (!(renta > 0) || !(porcentaje > 0)) return false
+
+    try {
+      const response = await fetch('/api/ejercicios', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          empresa_id: empresaId,
+          anio: ANIO_EJERCICIO,
+          renta_neta: renta,
+          porcentaje_distribucion: porcentaje,
+        }),
+      })
+
+      const data = await response.json()
+
+      if (!response.ok || !data?.success) return false
+
+      updateParameters({ income: renta, legalPercent: porcentaje })
+      return true
+    } catch {
+      return false
+    }
+  }, [company.id, income, legalPercent, sanitizeMoney, updateParameters])
+
+  useEffect(() => {
+    if (!editado.current) return
+
+    const timer = window.setTimeout(() => {
+      void guardarValores()
+    }, 800)
+
+    return () => window.clearTimeout(timer)
+  }, [income, legalPercent, guardarValores])
+
+  const guardar = async () => {
+    const empresaId = Number(company.id)
+
+    if (!empresaId) {
+      onNotify('Selecciona una empresa antes de guardar')
+      return
+    }
+
+    const renta = Number(sanitizeMoney(income))
+    const porcentaje = Number(sanitizeMoney(legalPercent))
+
+    if (!(renta > 0) || !(porcentaje > 0)) {
+      onNotify('Ingresa la renta neta y el porcentaje de distribución')
+      return
+    }
+
+    const ok = await guardarValores()
+    onNotify(ok ? 'Configuración guardada' : 'Error al guardar la configuración')
+  }
+
   return (
     <div className="flex flex-col gap-6">
       {/* ENCABEZADO */}
@@ -146,12 +285,12 @@ export function ConfigurationView({
 
           <p className="mt-2 max-w-2xl text-xs leading-5 text-muted-foreground">
             Define la base legal y las reglas que utilizará el motor de
-            cálculo.
+            cálculo. Los valores se adaptan a la empresa seleccionada.
           </p>
         </div>
 
         <Button
-          onClick={() => onNotify('Configuración guardada')}
+          onClick={guardar}
           className="h-9 gap-2"
         >
           <Save className="size-4" />
@@ -178,7 +317,7 @@ export function ConfigurationView({
             </p>
 
             <p className="mt-1 text-sm font-medium">
-              {company.name}
+              {company.name || 'Sin empresa seleccionada'}
             </p>
           </div>
 
@@ -188,16 +327,20 @@ export function ConfigurationView({
             </p>
 
             <p className="mt-1 text-sm font-medium">
-              {company.activity}
+              {company.activity || '—'}
             </p>
           </div>
 
           <div className="sm:col-span-2">
             <ConfigField
               label="Renta neta anual"
-              value=""
+              value={income}
               prefix="S/"
               status="por-validar"
+              onChange={(value) => {
+                editado.current = true
+                setIncome(sanitizeMoney(value))
+              }}
               help="Ingresa la renta neta anual correspondiente al ejercicio."
             />
           </div>
@@ -214,17 +357,24 @@ export function ConfigurationView({
           <div className="space-y-5">
             <ConfigField
               label="Porcentaje de distribución"
-              value="10"
+              value={legalPercent}
               suffix="%"
-              status="configurable"
-              help="Porcentaje de la renta neta anual destinado a los trabajadores (5% a 10% según actividad)."
+              status="confirmado"
+              onChange={(value) => {
+                editado.current = true
+                updateParameters({
+                  legalPercent: Number(sanitizeMoney(value)),
+                })
+              }}
+              help={`Porcentaje de la renta neta anual destinado a los trabajadores (5% a 10% según actividad). Se define por el rubro de la empresa ${company.activity ? `"${company.activity}"` : 'seleccionada'}.`}
             />
 
             <ConfigField
               label="Monto total a distribuir"
-              value="4860000"
+              value={montoTotal > 0 ? formatMoney(montoTotal) : ''}
               prefix="S/"
               status="por-validar"
+              disabled
               help="Se obtiene de la renta neta imponible. Verifica contra la declaración anual."
             />
           </div>
@@ -245,17 +395,21 @@ export function ConfigurationView({
                 <StatusBadge type="configurable" />
               </div>
 
-              <div className="flex items-center gap-3">
-                <Input
-                  type="number"
-                  defaultValue="50"
-                  className="h-9 w-24 bg-background/40 text-sm"
-                />
+              <ConfigField
+                label="Monto destinado a días (50%)"
+                value={montoDias > 0 ? formatMoney(montoDias) : ''}
+                prefix="S/"
+                status="por-validar"
+                disabled
+              />
 
-                <span className="text-[11px] text-muted-foreground">
-                  % por días · 50% por remuneraciones
-                </span>
-              </div>
+              <ConfigField
+                label="Monto destinado a remuneraciones (50%)"
+                value={montoRemuneraciones > 0 ? formatMoney(montoRemuneraciones) : ''}
+                prefix="S/"
+                status="por-validar"
+                disabled
+              />
 
               <div className="flex h-1.5 overflow-hidden rounded-full bg-muted">
                 <div
@@ -270,8 +424,8 @@ export function ConfigurationView({
               </div>
 
               <p className="text-[10px] leading-4 text-muted-foreground">
-                La ley establece 50% por días trabajados y 50% en
-                proporción a las remuneraciones.
+                La ley establece 50% del monto total a distribuir por días
+                trabajados y 50% en proporción a las remuneraciones.
               </p>
             </div>
           </div>
@@ -288,6 +442,7 @@ export function ConfigurationView({
               value="5350"
               prefix="S/"
               status="confirmado"
+              disabled
               help="UIT vigente para el ejercicio 2026."
             />
 
@@ -296,6 +451,7 @@ export function ConfigurationView({
               value="7"
               suffix="UIT"
               status="confirmado"
+              disabled
               help="Deducción de 7 UIT sobre las rentas de cuarta y quinta categoría."
             />
 

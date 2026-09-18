@@ -9,11 +9,18 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { money, number } from '@/lib/utilities-calculation'
 import { employees } from '@/lib/utilities-data'
 
-const statusStyle: Record<string, string> = { Calculado: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30', Cerrado: 'bg-slate-500/10 text-slate-300 border-slate-500/30', 'En cálculo': 'bg-amber-500/10 text-amber-400 border-amber-500/30', Borrador: 'bg-blue-500/10 text-blue-400 border-blue-500/30', Completo: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30', Pendiente: 'bg-amber-500/10 text-amber-400 border-amber-500/30', Observado: 'bg-rose-500/10 text-rose-400 border-rose-500/30' }
+const statusStyle: Record<string, string> = { 
+    Calculado: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30', 
+    Cerrado: 'bg-slate-500/10 text-slate-300 border-slate-500/30', 'En cálculo': 'bg-amber-500/10 text-amber-400 border-amber-500/30', 
+    Borrador: 'bg-blue-500/10 text-blue-400 border-blue-500/30', 
+    Completo: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30', 
+    Pendiente: 'bg-amber-500/10 text-amber-400 border-amber-500/30', 
+    Observado: 'bg-rose-500/10 text-rose-400 border-rose-500/30' }
 
 function Status({ value }: { value: string }) { return <Badge variant="outline" className={`font-medium ${statusStyle[value] || ''}`}>{value}</Badge> }
 function SectionTitle({ eyebrow, title, description, action }: { eyebrow?: string; title: string; description?: string; action?: React.ReactNode }) { return <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-    <div><p className="mb-1 text-xs font-semibold uppercase tracking-[0.18em] text-primary">{eyebrow}</p>
+    <div>
+        <p className="mb-1 text-xs font-semibold uppercase tracking-[0.18em] text-primary">{eyebrow}</p>
     <h1 className="text-2xl font-semibold tracking-tight text-foreground sm:text-3xl">{title}</h1>{description && <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">{description}</p>}</div>{action}</div> }
 function Kpi({ label, value, hint, tone = 'default', icon: Icon }: { label: string; value: string; hint: string; tone?: 'default' | 'teal' | 'amber' | 'rose'; icon: typeof Calculator }) { return <Card className="border-border/70 shadow-sm">
     <CardContent className="flex items-start justify-between p-5">
@@ -39,24 +46,38 @@ export function WorkersView({ query, setQuery, employees: list, onNotify }: { qu
             <Kpi label="Registros" value={number.format(list.length)} hint="Base cargada" icon={Users} tone="teal" />
             <Kpi label="Completos" value={number.format(list.filter((employee) => employee.status === 'Completo').length)} hint="Sin observaciones" icon={ClipboardCheck} />
                 <Kpi label="Observados" value={number.format(list.filter((employee) => employee.status !== 'Completo').length)} hint="Requieren revisión" icon={AlertCircle} tone="amber" />
-                </div><Card><CardHeader>
+                </div>
+                <Card>
+                    <CardHeader>
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><div>
                 <CardTitle>Lista computable</CardTitle>
-            <CardDescription>Sin importaciones registradas</CardDescription></div>
+            <CardDescription>Sin importaciones registradas</CardDescription>
+            </div>
             <div className="flex gap-2"><div className="relative">
                 <Search className="absolute left-3 top-2.5 size-4 text-muted-foreground" />
             <Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Buscar trabajador" className="w-full pl-9 sm:w-64" />
             </div>
-            <Button variant="outline" size="icon"><Filter className="size-4" /></Button></div>
-            </div></CardHeader><CardContent>
-                <div className="overflow-x-auto"><Table><TableHeader><TableRow>
-                <TableHead>Trabajador</TableHead><TableHead>Área</TableHead>
+            <Button variant="outline" size="icon">
+                <Filter className="size-4" />
+            </Button>
+            </div>
+            </div>
+            </CardHeader>
+            <CardContent>
+                <div className="overflow-x-auto"><Table>
+                    <TableHeader>
+                    <TableRow>
+            <TableHead>Trabajador</TableHead>
+            <TableHead>Área</TableHead>
             <TableHead>Días laborados</TableHead>
             <TableHead>Remuneración</TableHead>
             <TableHead>Estado</TableHead>
             <TableHead className="text-right">Acciones</TableHead>
-            </TableRow></TableHeader>
-            <TableBody>{list.length === 0 && <TableRow><TableCell colSpan={6} className="py-10 text-center text-sm text-muted-foreground">Sin trabajadores registrados</TableCell></TableRow>}{list.map((employee) => <TableRow key={employee.id}><TableCell>
+            </TableRow>
+            </TableHeader>
+            <TableBody>{list.length === 0 && <TableRow>
+                <TableCell colSpan={6} className="py-10 text-center text-sm text-muted-foreground">Sin trabajadores registrados</TableCell>
+            </TableRow>}{list.map((employee) => <TableRow key={employee.id}><TableCell>
                 <p className="font-medium">{employee.name}</p>
             <p className="text-xs text-muted-foreground">{employee.code} · {employee.role}</p>
             </TableCell>
@@ -69,4 +90,10 @@ export function WorkersView({ query, setQuery, employees: list, onNotify }: { qu
 <TableCell className="text-right">
     <Button variant="ghost" size="icon" onClick={() => onNotify(`Editando a ${employee.name}`)}><MoreHorizontal className="size-4" />
 </Button>
-</TableCell></TableRow>)}</TableBody></Table></div></CardContent></Card></div> }
+</TableCell>
+</TableRow>)}</TableBody>
+</Table>
+</div>
+</CardContent>
+</Card>
+</div> }

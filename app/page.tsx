@@ -1,16 +1,19 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
-import { ArrowDownToLine, BarChart3, Bell, BookOpen, Calculator, Check, FileBarChart, History, LayoutDashboard, Menu, MoreHorizontal, Play, Settings2, Sparkles, Users, X } from 'lucide-react'
+import { useRouter } from 'next/navigation'
+import { ArrowDownToLine, BarChart3, Bell, BookOpen, Calculator, CalendarDays, Check, FileBarChart, FileText, History, Info, LayoutDashboard, LogOut, Menu, Play, Settings2, Sparkles, Users, Wallet, X } from 'lucide-react'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
-import { company, companyClients, employees, parameters } from '@/lib/utilities-data'
+import { companyClients, employees } from '@/lib/utilities-data'
+import { SettingsProvider, useSettings } from '@/lib/settings-context'
+import { useAuth } from '@/lib/auth-context'
 import { calculateResults, getTotals, money, number, validateParameters } from '@/lib/utilities-calculation'
 import { AuditView } from '@/components/utilities/audit-view'
+import { BoletaConstancia } from '@/components/utilities/boleta-view'
 import { CalculationView } from '@/components/utilities/calculation-view'
 import { CompaniesView } from '@/components/utilities/companies-view'
 import { ConfigurationView } from '@/components/utilities/configuration-view'
@@ -19,7 +22,7 @@ import { RemaindersView } from '@/components/utilities/remainders-view'
 import { ReportsView } from '@/components/utilities/reports-view'
 import { ResultsView } from '@/components/utilities/results-view'
 import { WorkersView } from '@/components/utilities/workers-view'
-import type { EmployeeUtilityResult, ViewKey } from '@/components/utilities/types'
+import type { EmployeeUtilityResult, ImportSummary, ViewKey } from '@/components/utilities/types'
 
 const allNavItems: { label: ViewKey | 'Dashboard'; icon: typeof LayoutDashboard; count?: string }[] = [
   { label: 'Dashboard', icon: LayoutDashboard },
@@ -32,41 +35,47 @@ const allNavItems: { label: ViewKey | 'Dashboard'; icon: typeof LayoutDashboard;
   { label: 'Reportes', icon: FileBarChart },
   { label: 'Auditoría', icon: History },
 ]
-const statusStyle: Record<string, string> = { Calculado: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30', 
-  Cerrado: 'bg-slate-500/10 text-slate-300 border-slate-500/30', 'En cálculo': 'bg-amber-500/10 text-amber-400 border-amber-500/30', 
-  Borrador: 'bg-blue-500/10 text-blue-400 border-blue-500/30', 
-  Completo: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30', 
-  Pendiente: 'bg-amber-500/10 text-amber-400 border-amber-500/30', 
-  Observado: 'bg-rose-500/10 text-rose-400 border-rose-500/30' }
-
-function Status({ value }: { value: string }) { return <Badge variant="outline" className={`font-medium ${statusStyle[value] || ''}`}>{value}</Badge> }
-
 export default function Page() {
+  return (
+    <SettingsProvider>
+      <App />
+    </SettingsProvider>
+  )
+}
+
+function App() {
+  const { company, parameters } = useSettings()
+  const { user, cargando, logout } = useAuth()
+  const router = useRouter()
   const [view, setView] = useState<ViewKey | 'Dashboard'>('Dashboard')
   const [mobileNav, setMobileNav] = useState(false)
-  const [showAllModules, setShowAllModules] = useState(false)
   const [query, setQuery] = useState('')
   const [selected, setSelected] = useState<EmployeeUtilityResult | null>(null)
+  const [constancia, setConstancia] = useState<EmployeeUtilityResult | null>(null)
   const [runOpen, setRunOpen] = useState(false)
   const [toast, setToast] = useState('')
-  const results = useMemo(() => calculateResults(employees, parameters), [])
-  const totals = useMemo(() => getTotals(results, parameters), [results])
-  const validationErrors = validateParameters(parameters, employees.length)
-  const filteredEmployees = employees.filter((e) => `${e.name} ${e.code} ${e.department}`.toLowerCase().includes(query.toLowerCase()))
+  const [importSummary, setImportSummary] = useState<ImportSummary>({
+    remuneracionesTrabajadores: 0,
+    totalRemuneracionAnual: 0,
+    diasTrabajadores: 0,
+    totalDiasRegistrados: 0,
+    totalIncidencias: 0,
+  })
+  const [processedEmployees, setProcessedEmployees] = useState<typeof employees>(employees)
+  const results = useMemo(() => calculateResults(processedEmployees, parameters), [processedEmployees, parameters])
+  const totals = useMemo(() => getTotals(results, parameters), [results, parameters])
+  const validationErrors = validateParameters(parameters, processedEmployees.length)
+  const filteredEmployees = processedEmployees.filter((e) => `${e.name} ${e.code} ${e.department}`.toLowerCase().includes(query.toLowerCase()))
+  const handleReprocessed = (rows: typeof employees) => { setProcessedEmployees(rows.map(r => ({ ...r, remuneration: r.remuneration }))); notify('Días y resultados reprocesados correctamente') }
   const notify = (message: string) => { setToast(message); window.setTimeout(() => setToast(''), 2600) }
   const go = (next: ViewKey | 'Dashboard') => { setView(next); setMobileNav(false) }
-  const navItems = showAllModules
-  ? allNavItems
-  : allNavItems.filter(
-      (item) => item.label === 'Dashboard' || item.label === 'Empresas'
-    )
-  useEffect(() => {
-  const modulesUnlocked = localStorage.getItem('utilities-modules-unlocked')
+  const navItems = allNavItems
 
-  if (modulesUnlocked === 'true') {
-    setShowAllModules(true)
-  }
-}, [])
+  useEffect(() => {
+    if (!cargando && !user) router.push('/sign-in')
+  }, [cargando, user, router])
+  if (cargando) return <div className="min-h-screen bg-background" />
+  if (!user) return null
 
   return <TooltipProvider>
     <div className="min-h-screen bg-background text-foreground">
@@ -101,13 +110,17 @@ export default function Page() {
                         <div className="border-t border-sidebar-border p-3">
                           <div className="flex items-center gap-3 rounded-lg p-2">
                             <Avatar className="size-8">
-                              <AvatarFallback className="bg-primary/10 text-xs text-primary"></AvatarFallback>
-                              </Avatar>
+                              <AvatarFallback className="bg-primary/10 text-xs text-primary">
+                                {(user.nombre?.[0] ?? '') + (user.apellido?.[0] ?? '')}
+                              </AvatarFallback>
+                            </Avatar>
                               <div className="min-w-0 flex-1">
-                                <p className="truncate text-xs font-medium">Usuario</p>
-                                <p className="truncate text-[11px] text-sidebar-foreground/50"></p>
+                                <p className="truncate text-xs font-medium">{user.nombre} {user.apellido}</p>
+                                <p className="truncate text-[11px] text-sidebar-foreground/55 capitalize">{user.rol}</p>
                                 </div>
-                                <MoreHorizontal className="size-4 text-sidebar-foreground/40" />
+                                <Button variant="ghost" size="icon" className="size-7" onClick={logout} aria-label="Cerrar sesión" title="Cerrar sesión">
+                                  <LogOut className="size-3.5" />
+                                </Button>
                                 </div>
                                 </div>
                                 </aside>{mobileNav && <button aria-label="Cerrar menú" className="fixed inset-0 z-30 bg-foreground/20 lg:hidden" onClick={() => setMobileNav(false)} />}
@@ -139,27 +152,20 @@ export default function Page() {
             <p className="text-xs font-medium text-muted-foreground">Periodo sin configurar</p>
             <p className="mt-1 text-sm font-medium">Cierre anual de utilidades</p>
             </div>
-            <div className="hidden gap-2 sm:flex">
-              <Button variant="outline" size="sm" onClick={() => notify('Cambios guardados en borrador')}>
-                <Check className="mr-2 size-4" />Guardar borrador</Button>
-                <Button size="sm" onClick={() => setRunOpen(true)}>
-                  <Play className="mr-2 size-4" />Ejecutar cálculo</Button></div></div>
-      {view === 'Dashboard' && <DashboardView companies={companyClients} results={results} onNavigate={(next) => go(next)} />}{view === 'Cálculo' && <CalculationView results={results} totals={totals} errors={validationErrors} onRun={() => setRunOpen(true)} onSelect={setSelected} />}
+            </div>
+      {view === 'Dashboard' && <DashboardView companies={companyClients} results={results} onNavigate={(next) => go(next)} />}      {view === 'Cálculo' && <CalculationView results={results} totals={totals} errors={validationErrors} onRun={() => setRunOpen(true)} onSelect={setSelected} onSummaryChange={setImportSummary} onReprocessed={handleReprocessed} />}
       {view === 'Empresas' && (
   <CompaniesView
     onOpen={() => go('Cálculo')}
     onNotify={notify}
-    onShowAllModules={() => {
-      setShowAllModules(true)
-      go('Configuración')
-    }}
+    onShowAllModules={() => go('Configuración')}
   />
 )}
       {view === 'Configuración' && <ConfigurationView onNotify={notify} />}
       {view === 'Trabajadores' && <WorkersView query={query} setQuery={setQuery} employees={filteredEmployees} onNotify={notify} />}
-      {view === 'Resultados' && <ResultsView results={results} totals={totals} onSelect={setSelected} onNotify={notify} />}
+      {view === 'Resultados' && <ResultsView results={results} totals={totals} onSelect={setSelected} onNotify={notify} onConstancia={setConstancia} />}
       {view === 'Remanentes' && <RemaindersView results={results} totals={totals} />}
-      {view === 'Reportes' && <ReportsView onNotify={notify} />}
+      {view === 'Reportes' && <ReportsView results={results} totals={totals} onNotify={notify} />}
       {view === 'Auditoría' && <AuditView onNotify={notify} />}
       </main></div>
       <Sheet open={!!selected} onOpenChange={(open) => !open && setSelected(null)}>
@@ -168,35 +174,79 @@ export default function Page() {
             <SheetTitle>Detalle individual</SheetTitle>
             <SheetDescription>Resultado calculado para el ejercicio 2026.</SheetDescription>
             </SheetHeader>{selected && <div className="flex flex-col gap-6 p-5">
-              <div className="flex items-center gap-3"><Avatar className="size-12"><AvatarFallback className="bg-primary/10 text-primary">{selected.name.split(' ').map((n) => n[0]).slice(0,2).join('')}</AvatarFallback>
+              <div className="flex items-center gap-3">
+                <Avatar className="size-12">
+                  <AvatarFallback className="bg-primary/10 text-primary">{selected.name.split(' ').map((n) => n[0]).slice(0,2).join('')}</AvatarFallback>
               </Avatar><div>
                 <p className="font-semibold">{selected.name}</p>
                 <p className="text-sm text-muted-foreground">{selected.role} · {selected.code}</p>
                 </div></div>
-                <div className="grid grid-cols-2 gap-3">{[['Días laborados', number.format(selected.days)],['Remuneración', money.format(selected.remuneration)],['Factor días', `${(selected.daysFactor * 100).toFixed(2)}%`],['Factor remuneración', `${(selected.remunerationFactor * 100).toFixed(2)}%`]].map(([l,v]) => <div key={l} className="rounded-lg border border-border/70 p-3">
+                <div className="grid grid-cols-2 gap-3">{[['Días efectivos', number.format(selected.diasEfectivos)],['Remuneración computable', money.format(selected.remuneracionComputable)],['Utilidad por días', money.format(selected.distribucion.utilidadPorDias)],['Utilidad por rem.', money.format(selected.distribucion.utilidadPorRemuneraciones)]].map(([l,v]) => <div key={l} className="rounded-lg border border-border/70 p-3">
                 <p className="text-xs text-muted-foreground">{l}</p>
                 <p className="mt-1 font-semibold">{v}</p>
                 </div>)}</div>
                 <div className="rounded-xl bg-primary/5 p-4">
-                <p className="text-sm text-muted-foreground">Monto final a distribuir</p>
-                <p className="mt-1 text-3xl font-semibold text-primary">{money.format(selected.finalAmount)}</p>
+                <p className="text-sm text-muted-foreground">Utilidad bruta</p>
+                <p className="mt-1 text-3xl font-semibold text-primary">{money.format(selected.distribucion.utilidadBruta)}</p>
                 <div className="mt-3 flex justify-between text-xs">
                   <span>Preliminar</span>
                   <span>{money.format(selected.preliminary)}</span></div>
                   <div className="mt-1 flex justify-between text-xs">
+                    <span>Quinta categoría</span>
+                    <span>{money.format(selected.distribucion.quintaCategoria)}</span></div>
+                  <div className="mt-1 flex justify-between text-xs">
                     <span>Tope ({parameters.capMonths} remuneraciones)</span>
-                    <span>{money.format(selected.cap)}</span>
-                    </div></div>
+                    <span>{money.format(selected.cap)}</span></div>
+                  <div className="mt-3 flex justify-between border-t border-primary/20 pt-3 text-sm font-semibold">
+                    <span>Utilidad neta</span>
+                    <span>{money.format(selected.distribucion.utilidadNeta)}</span></div>
+                    </div>
+                    <Button onClick={() => { setConstancia(selected); setSelected(null) }}>
+                      <FileText className="mr-2 size-4" />Ver boleta individual</Button>
                     </div>}</SheetContent></Sheet>
+      <Sheet open={!!constancia} onOpenChange={(open) => !open && setConstancia(null)}>
+        <SheetContent className="w-full overflow-y-auto sm:max-w-2xl">
+          <SheetHeader>
+            <SheetTitle>Boleta / Constancia individual</SheetTitle>
+            <SheetDescription>Detalle del cálculo de utilidades para el trabajador.</SheetDescription>
+          </SheetHeader>
+          <div className="p-3">
+            {constancia && <BoletaConstancia result={constancia} onNotify={notify} />}
+          </div>
+        </SheetContent>
+      </Sheet>
       <Dialog open={runOpen} onOpenChange={setRunOpen}>
         <DialogContent><DialogHeader>
           <DialogTitle>Ejecutar cálculo de utilidades</DialogTitle>
-          <DialogDescription>Se generará una nueva versión con la información validada del ejercicio.</DialogDescription></DialogHeader>
-          <div className="flex flex-col gap-3 py-2">
-            <div className="flex items-center gap-3 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm text-emerald-400">
-            <Check className="size-4" />{employees.length} trabajadores listos para procesar</div>
-            <div className="flex items-center gap-3 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm text-emerald-400">
-            <Check className="size-4" />{validationErrors.length === 0 ? 'Parámetros y fórmulas validados' : `Validaciones pendientes: ${validationErrors.length}`}</div><p className="text-xs text-muted-foreground">El cálculo se registrará como una nueva versión al confirmar.</p>
+          <DialogDescription>Revisa el resumen de la información extraída antes de generar el cálculo.</DialogDescription></DialogHeader>
+          <div className="grid gap-3 py-2 sm:grid-cols-2">
+            <div className="flex flex-col rounded-2xl border border-primary/20 bg-gradient-to-b from-primary/5 to-transparent p-5">
+              <div className="flex items-center justify-between">
+                <div className="flex size-10 items-center justify-center rounded-xl bg-primary/10 text-primary">
+                  <Wallet className="size-5" />
+                </div>
+                <span className="rounded-full bg-primary/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-primary">Remuneraciones</span>
+              </div>
+              <p className="mt-5 text-xs text-muted-foreground">Remuneración anual computable</p>
+              <p className="mt-1 text-2xl font-bold tracking-tight text-primary tabular-nums">{money.format(importSummary.totalRemuneracionAnual)}</p>
+            </div>
+            <div className="flex flex-col rounded-2xl border border-primary/20 bg-gradient-to-b from-primary/5 to-transparent p-5">
+              <div className="flex items-center justify-between">
+                <div className="flex size-10 items-center justify-center rounded-xl bg-primary/10 text-primary">
+                  <CalendarDays className="size-5" />
+                </div>
+                <span className="rounded-full bg-primary/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-primary">Días laborados</span>
+              </div>
+              <p className="mt-5 text-xs text-muted-foreground">Días registrados en el ejercicio</p>
+              <p className="mt-1 text-2xl font-bold tracking-tight text-primary tabular-nums">{number.format(importSummary.totalDiasRegistrados)}</p>
+              <div className="mt-4 flex items-center justify-between rounded-lg bg-background/60 px-3 py-2 text-sm">
+                <span className="text-muted-foreground">Incidencias</span>
+                <span className="font-semibold">{number.format(importSummary.totalIncidencias)}</span>
+              </div>
+            </div>
+          </div>
+            <div className="flex items-center gap-2 rounded-lg bg-amber-500/10 px-3 py-2.5 text-xs text-amber-500">
+              <Info className="size-4 shrink-0" />El cálculo se registrará como una nueva versión al confirmar.
             </div>
             <DialogFooter>
               <Button variant="outline" onClick={() => setRunOpen(false)}>Cancelar</Button>
@@ -205,7 +255,8 @@ export default function Page() {
                 </DialogFooter>
                 </DialogContent>
                 </Dialog>
-      {toast && <div role="status" className="fixed bottom-5 right-5 z-50 flex items-center gap-3 rounded-lg border border-border bg-card px-4 py-3 text-sm shadow-lg"><Check className="size-4 text-emerald-400" />{toast}</div>}
+      {toast && <div role="status" className="fixed bottom-5 right-5 z-50 flex items-center gap-3 rounded-lg border border-border bg-card px-4 py-3 text-sm shadow-lg">
+        <Check className="size-4 text-emerald-400" />{toast}</div>}
     </div></TooltipProvider>
 }
 
