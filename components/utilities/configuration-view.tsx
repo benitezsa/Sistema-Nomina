@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Save, ShieldCheck } from 'lucide-react'
+import { Save } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import {

@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "lib": ["esnext", "dom"],
+    "target": "ES2020",
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "strict": false,
+    "declaration": false,
+    "sourceMap": false,
+    "outDir": "scripts-tmp/out-lib",
+    "rootDir": ".",
+    "baseUrl": ".",
+    "paths": { "@/*": ["./*"] },
+    "types": ["node"]
+  },
+  "include": ["lib/**/*.ts"]
+}

@@ -13,3 +13,9 @@ __v0_jsx-dev-runtime.ts
 node_modules
 .next/
 .DS_Store
+
+# Salida compilada de las verificaciones (scripts/verify-*.cjs)
+# Se regenera con: npm run verify
+scripts-tmp/out-lib/
+scripts-tmp/out/
+*.tsbuildinfo

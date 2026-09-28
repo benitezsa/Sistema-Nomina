@@ -16,6 +16,19 @@
   import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
   import { calculateFund, calcularDiasNoLaborados, getTotals, money, number } from '@/lib/utilities-calculation'
+  import {
+    consolidarTrabajadores,
+    extraerDias,
+    extraerRemuneraciones,
+    formatearPeriodo,
+    inferirAnioEjercicio,
+    leerPeriodo,
+    mesesTrabajados,
+    type ImportedWorker as ImportedWorkerMotor,
+    type IncidenciaImportada,
+    type PeriodoIncidencia,
+  } from '@/lib/import-utilidades'
+  import type { ResumenRemuneracion } from '@/lib/import-utilidades-atomico'
   import { useSettings } from '@/lib/settings-context'
   import type { Employee, EmployeeUtilityResult, ImportSummary, Jornada } from './types'
   
@@ -40,65 +53,22 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
     total: number
   }
 
-  type IncidenciaImportada = {
-  dni: string
-  codigo: string
-  descripcion: string
-  cantidadDias: number
-  diasNeto?: number
-  fechaInicio: ExcelJS.CellValue
-  fechaFin: ExcelJS.CellValue
-}
-
-type FeriadoImportado = {
+  type FeriadoImportado = {
   fecha: ExcelJS.CellValue
   descripcion: string
 }
 
-type ImportedWorker = {
-  dni: string
-  apellidoPaterno: string
-  apellidoMaterno: string
-  nombres: string
+  // El trabajador normalizado es el que entrega el motor: la vista solo acota
+  // la jornada a los valores válidos del dominio (4, 5 o 6 días por semana).
+  type ImportedWorker = Omit<ImportedWorkerMotor, 'jornada'> & { jornada?: Jornada }
 
-  // Datos laborales originales encontrados en los archivos
-  fechaInicio: ExcelJS.CellValue
-  fechaCese: ExcelJS.CellValue
 
-  // Información consolidada de remuneraciones
-  remuneraciones: MonthlyValues
-
-  // Información consolidada de días
-  diasTrabajados?: MonthlyValues
-
-  // Meses en los que el trabajador fue encontrado
-  mesesRemuneraciones?: string[]
-  mesesDias?: string[]
-
-  // Meses en los que existe información en cualquiera de las fuentes
-  mesesPresentes?: string[]
-
-  // Información para las siguientes etapas
-  incidencias?: IncidenciaImportada[]
-  diasNoLaborados?: number
-  diasEfectivos?: number
-
-  // Referencias del formato CITIKOLD ("DÍAS EFECTIVOS LABORADOS 2025"):
-  //  - diasPosibles: columna L (días posibles / potenciales)
-  //  - diasNoLaboradosReferencia: columna M (deducciones a descontar)
-  //  - diasEfectivosReferencia: columna O (neto del Excel, solo referencia)
-  diasPosibles?: number
-  diasNoLaboradosReferencia?: number
-  diasEfectivosReferencia?: number
-
-  // Jornada semanal (6 | 5 | 4) y feriados del ejercicio, extraídos de los archivos
-  jornada?: Jornada
-  feriados?: string[]
-
-  // Días laborables brutos por mes (según jornada y feriados) dentro del tramo
-  // trabajado. Permite recalcular Días laborables al editar los meses presentes.
-  laborablesPorMes?: MonthlyValues
-}
+  function adaptarTrabajadoresMotor(trabajadores: ImportedWorkerMotor[]): ImportedWorker[] {
+    return trabajadores.map((trabajador) => ({
+      ...trabajador,
+      jornada: trabajador.jornada === 4 || trabajador.jornada === 5 || trabajador.jornada === 6 ? trabajador.jornada : undefined,
+    }))
+  }
 
   const months = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre']   as const
 
@@ -154,17 +124,18 @@ type ImportedWorker = {
     return '—'
   }
 
-  function getPeriodosTrabajados(worker: ImportedWorker, mesesPresentesOverride?: string[]): { mes: string; nombre: string; estado: EstadoPeriodo }[] {
-    // Reutiliza la información de permanencia que ya calcula el sistema
-    // (mesesPresentes consolida remuneraciones y días laborados).
-    // mesesPresentesOverride permite corregir la permanencia durante la validación.
-    const mesesPresentes = new Set(mesesPresentesOverride ?? worker.mesesPresentes ?? [])
+  // Los meses trabajados del trabajador salen siempre de mesesTrabajados (motor):
+  // un mes cuenta como trabajado si el período tiene días registrados > 0 y tener
+  // una fila en el archivo no lo convierte en mes trabajado. El segundo argumento
+  // es la corrección manual de la permanencia en Validación.
+  function getPeriodosTrabajados(worker: ImportedWorker, mesesOverride?: string[]): { mes: string; nombre: string; estado: EstadoPeriodo }[] {
+    const mesesConDias = new Set(mesesTrabajados(worker, mesesOverride))
     const resultado: { mes: string; nombre: string; estado: EstadoPeriodo }[] = []
     let prevPresente = false
     let trabajóAntes = false
 
     for (const mes of months) {
-      const presente = mesesPresentes.has(mes)
+      const presente = mesesConDias.has(mes)
       let estado: EstadoPeriodo
 
       if (presente) {
@@ -213,18 +184,85 @@ type ImportedWorker = {
     return Number.isNaN(date.getTime()) ? null : date
   }
 
+  const SIN_DATO = 'No disponible'
+
+  /**
+   * Resuelve una fecha del trabajador a partir de todas las fuentes que la
+   * aportan (edición de Validación primero, después el dato importado) y devuelve
+   * una única versión normalizada. No inventa fechas: si ninguna fuente tiene
+   * el dato, se informa "No disponible".
+   */
+  function resolverFecha(...candidatos: (ExcelJS.CellValue | string | undefined)[]): { iso: string; etiqueta: string } {
+    for (const candidato of candidatos) {
+      const iso = formatInputDate(candidato)
+      if (!iso) continue
+      const [anio, mes, dia] = iso.split('-')
+      return { iso, etiqueta: `${dia}/${mes}/${anio}` }
+    }
+    return { iso: '', etiqueta: SIN_DATO }
+  }
+
+  /** Fecha de ingreso del trabajador: fuente única para toda la vista. */
+  function fechaIngresoTrabajador(trabajador: ImportedWorker, editada?: string) {
+    return resolverFecha(editada, trabajador.fechaInicio)
+  }
+
+  /** Fecha de cese del trabajador: misma fuente única que el ingreso. */
+  function fechaCeseTrabajador(trabajador: ImportedWorker, editada?: string) {
+    return resolverFecha(editada, trabajador.fechaCese)
+  }
+
+  function observacionesRemuneracionImportada(resumen?: ResumenRemuneracion): string[] {
+    if (!resumen) return []
+
+    const observaciones: string[] = []
+
+    if (!resumen.mensualDisponible && resumen.totalDeclarado !== undefined) {
+      observaciones.push('El archivo solo aporta total anual de remuneración: se usa ese importe y no se distribuyen meses.')
+    }
+    for (const conflicto of resumen.conflictos) observaciones.push(`Revisión de importes: ${conflicto}`)
+    if (resumen.duplicados > 0) {
+      observaciones.push(`Se descartaron ${resumen.duplicados} registro(s) duplicado(s) para no duplicar la remuneración.`)
+    }
+    if (resumen.conceptosDesconocidos.length > 0) {
+      observaciones.push(`Conceptos fuera del catálogo, excluidos del cálculo: ${resumen.conceptosDesconocidos.join(', ')}.`)
+    }
+    if (resumen.conceptosExcluidos.length > 0) {
+      observaciones.push(`Conceptos no remunerativos, excluidos del cálculo: ${resumen.conceptosExcluidos.join(', ')}.`)
+    }
+    if (resumen.lotesAnteriores.length > 0) {
+      observaciones.push(`Este lote reemplaza a: ${resumen.lotesAnteriores.join(', ')} (se conserva la trazabilidad).`)
+    }
+
+    return observaciones
+  }
+
   function getObservaciones(trabajador: ImportedWorker): string[] {
     const observaciones: string[] = []
 
     if (trabajador.remuneraciones.total <= 0) observaciones.push('Sin remuneraciones registradas para el ejercicio.')
+    if (trabajador.remuneracionIncompleta) observaciones.push('Remuneración anual pendiente: el archivo no contiene los 12 meses necesarios para calcularla.')
     if ((trabajador.diasTrabajados?.total ?? 0) <= 0) observaciones.push('Sin días laborados registrados para el ejercicio.')
-    if (!trabajador.fechaInicio) observaciones.push('Fecha de ingreso pendiente de registrar.')
+    if (!fechaIngresoTrabajador(trabajador).iso) observaciones.push('Fecha de ingreso pendiente de registrar.')
     if (!`${trabajador.apellidoPaterno}${trabajador.apellidoMaterno}${trabajador.nombres}`.trim()) observaciones.push('Nombres incompletos en la base importada.')
+    const pendientes = pendientesDeRevision(trabajador.incidencias ?? [])
+    if (pendientes.length > 0) {
+      observaciones.push(`${pendientes.length} incidencia(s) sin identificar tipo o importe: quedan pendientes de revisión y no descuentan días.`)
+    }
+    observaciones.push(...observacionesRemuneracionImportada(trabajador.remuneracionResumen))
 
     return observaciones
   }
 
   type EstadoValidacion = 'Completo' | 'Pendiente'
+
+  // Las incidencias no identificadas no restan días: quedan pendientes de
+  // revisión en Validación.
+  const incidenciasAplicables = (lista: IncidenciaImportada[]): IncidenciaImportada[] =>
+    lista.filter((inc) => inc.estado !== 'no_identificada')
+
+  const pendientesDeRevision = (lista: IncidenciaImportada[]): IncidenciaImportada[] =>
+    lista.filter((inc) => inc.estado === 'no_identificada')
 
   const estadoValidacion = (trabajador: ImportedWorker): EstadoValidacion =>
     getObservaciones(trabajador).length === 0 ? 'Completo' : 'Pendiente'
@@ -232,6 +270,253 @@ type ImportedWorker = {
   const ESTADO_VALIDACION_ESTILO: Record<EstadoValidacion, string> = {
     Completo: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30',
     Pendiente: 'bg-amber-500/10 text-amber-400 border-amber-500/30',
+  }
+
+  function getValidacionCalculada(trabajador: ImportedWorker, jornadas: Record<string, Jornada>, fechasEditadas: Record<string, { fechaInicio?: string; fechaCese?: string }>, mesesEditados: Record<string, string[]>, incidenciasEditadas: Record<string, IncidenciaImportada[]>): { posibles: number; noLaborados: number; efectivos: number; estado: EstadoValidacion; observaciones: string[] } {
+    const jornada = (jornadas[trabajador.dni] ?? trabajador.jornada) as Jornada | undefined
+    const fechas = fechasEditadas[trabajador.dni] ?? {}
+    const incidencias = incidenciasEditadas[trabajador.dni] ?? trabajador.incidencias ?? []
+    const noLaborados = calcularDiasNoLaborados(
+      incidenciasAplicables(incidencias).map(inc => ({
+        cantidadDias: inc.cantidadDias,
+        diasNeto: inc.diasNeto,
+        fechaInicio: parseIncFecha(inc.fechaInicio),
+        fechaFin: parseIncFecha(inc.fechaFin),
+      })),
+      jornada ?? 5,
+      new Set(trabajador.feriados ?? [])
+    )
+    const mesesConDias = new Set(mesesTrabajados(trabajador, mesesEditados[trabajador.dni]))
+    const posibles = trabajador.diasPosibles
+      ?? (trabajador.laborablesPorMes
+        ? months.reduce((sum, mes) => sum + (mesesConDias.has(mes) ? (trabajador.laborablesPorMes?.[mes] ?? 0) : 0), 0)
+        : (trabajador.diasTrabajados?.total ?? 0))
+    const efectivos = Math.max(0, posibles - noLaborados)
+    const ingreso = fechaIngresoTrabajador(trabajador, fechas.fechaInicio)
+
+    const observaciones: string[] = []
+    if (trabajador.remuneraciones.total <= 0) observaciones.push('Sin remuneraciones registradas para el ejercicio.')
+    if (trabajador.remuneracionIncompleta) observaciones.push('Remuneración anual pendiente: el archivo no contiene los 12 meses necesarios para calcularla.')
+    if (posibles <= 0) observaciones.push('Sin días laborados registrados para el ejercicio.')
+    if (!ingreso.iso) observaciones.push('Fecha de ingreso pendiente de registrar.')
+    if (!`${trabajador.apellidoPaterno}${trabajador.apellidoMaterno}${trabajador.nombres}`.trim()) observaciones.push('Nombres incompletos en la base importada.')
+    if (!jornadas[trabajador.dni] && !trabajador.jornada) observaciones.push('Jornada no disponible en el archivo; no se asume automáticamente.')
+    if (noLaborados > posibles) observaciones.push(`Los días no laborados (${number.format(noLaborados)}) superan los días posibles (${number.format(posibles)}); revisa las incidencias.`)
+    if (trabajador.diasEfectivosReferencia && trabajador.diasEfectivosReferencia > 0 && trabajador.diasEfectivosReferencia !== efectivos) {
+      observaciones.push(`Discrepancia de días: el sistema calcula ${number.format(efectivos)} efectivos (${number.format(posibles)} posibles − ${number.format(noLaborados)} no laborados), pero el cuadro del Excel indica ${number.format(trabajador.diasEfectivosReferencia)}.`)
+    }
+    observaciones.push(...observacionesRemuneracionImportada(trabajador.remuneracionResumen))
+
+    const estado: EstadoValidacion = observaciones.length === 0 ? 'Completo' : 'Pendiente'
+    return { posibles, noLaborados, efectivos, estado, observaciones }
+  }
+
+  type Celda = string | number
+
+  function writeTableExcel(ws: ExcelJS.Worksheet, headers: string[], rows: Celda[][], opts: { moneyCols?: number[]; pctCols?: number[]; widths?: number[] } = {}) {
+    const { moneyCols = [], pctCols = [], widths } = opts
+    widths?.forEach((w, i) => { ws.getColumn(i + 1).width = w })
+    const start = ws.lastRow ? ws.lastRow.number + 1 : 1
+    const headerRow = ws.getRow(start)
+    headers.forEach((h, i) => {
+      const c = headerRow.getCell(i + 1)
+      c.value = h
+      c.font = { bold: true, color: { argb: 'FF4C1D95' } }
+      c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF5F3FF' } }
+      c.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } }
+    })
+    let row = start + 1
+    for (const data of rows) {
+      data.forEach((v, j) => {
+        const c = ws.getCell(row, j + 1)
+        c.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } }
+        if (moneyCols.includes(j)) {
+          c.value = v as number
+          c.numFmt = '"S/ " #,##0.00'
+        } else if (pctCols.includes(j)) {
+          c.value = v as number
+          c.numFmt = '0.0000"%"'
+        } else {
+          c.value = v
+        }
+      })
+      row++
+    }
+  }
+
+  async function descargarInformacion(nombreArchivo: string, construir: (lib: typeof ExcelJS) => ExcelJS.Workbook): Promise<void> {
+    const wb = construir(ExcelJS)
+    const buffer = await wb.xlsx.writeBuffer()
+    const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = nombreArchivo
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  }
+
+  function BotonExportarInformacion({ onClick, disabled, label = 'Exportar información' }: { onClick: () => void; disabled?: boolean; label?: string }) {
+    return (
+      <Button variant="outline" size="sm" onClick={onClick} disabled={disabled} title="Exportar a Excel la información calculada">
+        <Download className="mr-2 size-4" />{label}
+      </Button>
+    )
+  }
+
+  async function exportarCarga(trabajadores: ImportedWorker[], trabajadoresDias: ImportedWorker[]): Promise<void> {
+    const totalRemAnual = trabajadores.reduce((s, t) => s + (t.remuneraciones?.total ?? 0), 0)
+    const totalDiasReg = trabajadoresDias.reduce((s, t) => s + (t.diasTrabajados?.total ?? 0), 0)
+    const totalIncidencias = trabajadoresDias.reduce((s, t) => s + (t.incidencias?.length ?? 0), 0)
+
+    await descargarInformacion('carga-informacion-calculada.xlsx', (ExcelJS) => {
+      const wb = new ExcelJS.Workbook()
+
+      const resumen = wb.addWorksheet('Resumen')
+      writeTableExcel(resumen, ['Concepto', 'Valor'], [
+        ['Trabajadores con remuneraciones', trabajadores.length],
+        ['Total remuneración anual computable', totalRemAnual],
+        ['Trabajadores con días laborados', trabajadoresDias.length],
+        ['Total días laborados registrados', totalDiasReg],
+        ['Incidencias registradas', totalIncidencias],
+      ], { moneyCols: [1], widths: [40, 24] })
+
+      const rem = wb.addWorksheet('Remuneraciones calculadas')
+      writeTableExcel(rem, ['DNI', 'Apellido paterno', 'Apellido materno', 'Nombres', ...months.map((m) => MONTH_LABELS[m]), 'Total anual'], trabajadores.map((t) => [
+        t.dni, t.apellidoPaterno, t.apellidoMaterno, t.nombres,
+        ...months.map((m) => t.remuneraciones?.[m] ?? 0),
+        t.remuneraciones?.total ?? 0,
+      ]), { moneyCols: months.map((_, i) => i + 4).concat(16), widths: [14, 20, 20, 24, ...months.map(() => 12), 16] })
+
+      const dias = wb.addWorksheet('Días laborados calculados')
+      writeTableExcel(dias, ['DNI', 'Apellido paterno', 'Apellido materno', 'Nombres', ...months.map((m) => MONTH_LABELS[m]), 'Total días', 'Incidencias'], trabajadoresDias.map((t) => [
+        t.dni, t.apellidoPaterno, t.apellidoMaterno, t.nombres,
+        ...months.map((m) => t.diasTrabajados?.[m] ?? 0),
+        t.diasTrabajados?.total ?? 0,
+        t.incidencias?.length ?? 0,
+      ]), { widths: [14, 20, 20, 24, ...months.map(() => 12), 14, 12] })
+
+      return wb
+    })
+  }
+
+  async function exportarValidacion(trabajadores: ImportedWorker[], jornadas: Record<string, Jornada>, fechasEditadas: Record<string, { fechaInicio?: string; fechaCese?: string }>, mesesEditados: Record<string, string[]>, incidenciasEditadas: Record<string, IncidenciaImportada[]>): Promise<void> {
+    const conRemuneraciones = trabajadores.filter((t) => t.remuneraciones.total > 0).length
+    const conDias = trabajadores.filter((t) => (t.diasTrabajados?.total ?? 0) > 0).length
+    const totalIncidencias = trabajadores.reduce((s, t) => s + (t.incidencias?.length ?? 0), 0)
+    const completos = trabajadores.filter((t) => getValidacionCalculada(t, jornadas, fechasEditadas, mesesEditados, incidenciasEditadas).estado === 'Completo').length
+
+    await descargarInformacion('validacion-informacion-calculada.xlsx', (ExcelJS) => {
+      const wb = new ExcelJS.Workbook()
+
+      const resumen = wb.addWorksheet('Resumen')
+      writeTableExcel(resumen, ['Concepto', 'Valor'], [
+        ['Registros', trabajadores.length],
+        ['Con remuneraciones', conRemuneraciones],
+        ['Con días laborados', conDias],
+        ['Incidencias', totalIncidencias],
+        ['Trabajadores completos', completos],
+        ['Trabajadores pendientes', trabajadores.length - completos],
+      ], { widths: [40, 24] })
+
+      const ws = wb.addWorksheet('Validación calculada')
+      const filas = trabajadores.map((t) => {
+        const v = getValidacionCalculada(t, jornadas, fechasEditadas, mesesEditados, incidenciasEditadas)
+        const jornada = (jornadas[t.dni] ?? t.jornada) as Jornada | undefined
+        const periodos = getPeriodosTrabajados(t, mesesEditados[t.dni])
+        return [
+          t.dni,
+          `${t.apellidoPaterno} ${t.apellidoMaterno}`.trim() || t.nombres || 'Sin nombre',
+          jornada ? `${jornada} días/semana` : 'No disponible',
+          fechaIngresoTrabajador(t, fechasEditadas[t.dni]?.fechaInicio).etiqueta,
+          fechaCeseTrabajador(t, fechasEditadas[t.dni]?.fechaCese).etiqueta,
+          periodos.filter((p) => p.estado === 'Trabajó' || p.estado === 'Reingresó').length,
+          periodos.filter((p) => p.estado === 'No trabajó').length,
+          v.posibles,
+          v.noLaborados,
+          v.efectivos,
+          t.remuneraciones.total,
+          pendientesDeRevision(incidenciasEditadas[t.dni] ?? t.incidencias ?? []).length,
+          v.estado,
+        ]
+      })
+      writeTableExcel(ws, ['DNI', 'Trabajador', 'Jornada', 'Ingreso', 'Cese', 'Meses trabajados', 'Meses sin trabajar', 'Días posibles', 'Días no laborados', 'Días efectivos', 'Remuneración anual', 'Incidencias pendientes', 'Estado'], filas, { moneyCols: [10], widths: [14, 32, 16, 14, 14, 16, 18, 14, 16, 14, 18, 20, 14] })
+
+      const incidenciasWs = wb.addWorksheet('Incidencias')
+      const filasIncidencias: Celda[][] = []
+      for (const t of trabajadores) {
+        const lista = incidenciasEditadas[t.dni] ?? t.incidencias ?? []
+        for (const inc of lista) {
+          filasIncidencias.push([
+            t.dni,
+            `${t.apellidoPaterno} ${t.apellidoMaterno}`.trim() || t.nombres || 'Sin nombre',
+            inc.descripcion || inc.tipo || '',
+            formatearPeriodo(inc.periodo) || SIN_DATO,
+            inc.periodo?.anio ?? '',
+            formatInputDate(inc.fechaInicio) || SIN_DATO,
+            formatInputDate(inc.fechaFin) || SIN_DATO,
+            inc.cantidadDias,
+            inc.diasNeto ?? '',
+            inc.estado === 'no_identificada' ? 'Pendiente de identificar' : 'Identificada',
+            inc.origen?.map((o) => `${o.hoja}!${String.fromCharCode(64 + Math.min(o.columna, 26))}${o.fila}`).join(' · ') ?? '',
+          ])
+        }
+      }
+      writeTableExcel(incidenciasWs, ['DNI', 'Trabajador', 'Tipo', 'Período', 'Año del período', 'Fecha inicio', 'Fecha fin', 'Días', 'Días netos', 'Estado', 'Origen'], filasIncidencias, { widths: [14, 32, 18, 16, 18, 14, 14, 10, 12, 22, 26] })
+
+      return wb
+    })
+  }
+
+  async function exportarDistribucion(results: EmployeeUtilityResult[], totals: ReturnType<typeof getTotals>): Promise<void> {
+    const totalDiasEfectivos = results.reduce((s, r) => s + (r.diasEfectivos ?? 0), 0)
+    const totalRemuneraciones = results.reduce((s, r) => s + (r.remuneracionComputable ?? 0), 0)
+    const fondoPorDias = totals.fund / 2
+    const fondoPorRemuneraciones = totals.fund / 2
+
+    await descargarInformacion('distribucion-informacion-calculada.xlsx', (ExcelJS) => {
+      const wb = new ExcelJS.Workbook()
+
+      const resumen = wb.addWorksheet('Resumen del fondo')
+      writeTableExcel(resumen, ['Concepto', 'Valor'], [
+        ['Fondo total', totals.fund],
+        ['Fondo por días (50%)', fondoPorDias],
+        ['Fondo por remuneraciones (50%)', fondoPorRemuneraciones],
+        ['Total días efectivos', totalDiasEfectivos],
+        ['Total remuneraciones', totalRemuneraciones],
+        ['Trabajadores', results.length],
+        ['A distribuir', totals.distributed],
+        ['Quinta categoría total', totals.totalQuintaCategoria],
+        ['Remanente', totals.remainder],
+        ['Topes aplicados', totals.capped],
+      ], { moneyCols: [1], widths: [40, 24] })
+
+      const ws = wb.addWorksheet('Distribución calculada')
+      const filas = results.map((r) => {
+        const pctDias = totalDiasEfectivos > 0 ? (r.diasEfectivos / totalDiasEfectivos) * 100 : 0
+        const pctRem = totalRemuneraciones > 0 ? (r.remuneracionComputable / totalRemuneraciones) * 100 : 0
+        return [
+          r.code,
+          r.name,
+          r.diasEfectivos,
+          pctDias,
+          r.distribucion.utilidadPorDias,
+          r.remuneracionComputable,
+          pctRem,
+          r.distribucion.utilidadPorRemuneraciones,
+          r.distribucion.utilidadBruta,
+          r.capApplied ? r.cap : 0,
+          r.remainder,
+          r.distribucion.quintaCategoria,
+          r.distribucion.utilidadNeta,
+        ]
+      })
+      writeTableExcel(ws, ['DNI', 'Trabajador', 'Días efectivos', '% días', 'Importe días', 'Rem. computable', '% rem', 'Importe rem', 'Utilidad bruta', 'Tope', 'Excedente', 'Quinta categoría', 'Utilidad neta'], filas, { moneyCols: [4, 5, 7, 8, 9, 10, 11, 12], pctCols: [3, 6], widths: [14, 30, 14, 14, 16, 16, 14, 16, 16, 14, 14, 14, 14] })
+
+      return wb
+    })
   }
 
   function EstadoValidacionBadge({ estado }: { estado: EstadoValidacion }) {
@@ -265,6 +550,25 @@ type ImportedWorker = {
     )
   }
 
+  /** Resumen de períodos: se calcula con los mismos datos que la grilla. */
+  function ResumenPeriodos({ periodos }: { periodos: { mes: string; nombre: string; estado: EstadoPeriodo }[] }) {
+    return (
+      <div className="mt-4 flex flex-wrap gap-2">
+        <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 text-xs font-semibold text-emerald-400">
+          {periodos.filter((p) => p.estado === 'Trabajó').length} meses trabajados
+        </div>
+
+        <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-xs font-semibold text-amber-400">
+          {periodos.filter((p) => p.estado === 'Reingresó').length} reingresos
+        </div>
+
+        <div className="rounded-lg border border-slate-500/30 bg-slate-500/10 px-3 py-1.5 text-xs font-semibold text-slate-400">
+          {periodos.filter((p) => p.estado === 'No trabajó').length} sin trabajar
+        </div>
+      </div>
+    )
+  }
+
   function PeriodosTrabajados({ worker }: { worker: ImportedWorker }) {
     const periodos = getPeriodosTrabajados(worker)
 
@@ -276,7 +580,7 @@ type ImportedWorker = {
               Períodos trabajados
             </p>
             <p className="text-xs text-muted-foreground">
-             
+              Un mes cuenta como trabajado cuando el período tiene días registrados.
             </p>
           </div>
         </div>
@@ -297,30 +601,18 @@ type ImportedWorker = {
         ))}
     </div>
 
-        <div className="mt-4 flex flex-wrap gap-2">
-          <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 text-xs font-semibold text-emerald-400">
-            {periodos.filter((p) => p.estado === 'Trabajó').length} meses trabajados
-          </div>
-
-          <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-xs font-semibold text-amber-400">
-            {periodos.filter((p) => p.estado === 'Reingresó').length} reingresos
-          </div>
-
-          <div className="rounded-lg border border-slate-500/30 bg-slate-500/10 px-3 py-1.5 text-xs font-semibold text-slate-400">
-            {periodos.filter((p) => p.estado === 'No trabajó').length} sin trabajar
-          </div>
-        </div>
+        <ResumenPeriodos periodos={periodos} />
       </div>
     )
   }
 
   function PeriodosEditables({ trabajador, mesesEditados, setMesesEditados }: { trabajador: ImportedWorker; mesesEditados: Record<string, string[]>; setMesesEditados: React.Dispatch<React.SetStateAction<Record<string, string[]>>> }) {
-    const presentes = new Set(mesesEditados[trabajador.dni] ?? trabajador.mesesPresentes ?? [])
-    const periodos = getPeriodosTrabajados(trabajador, [...presentes])
+    const actuales = mesesTrabajados(trabajador, mesesEditados[trabajador.dni])
+    const periodos = getPeriodosTrabajados(trabajador, actuales)
 
     const alternar = (mes: string) => {
       setMesesEditados((prev) => {
-        const actual = new Set(prev[trabajador.dni] ?? trabajador.mesesPresentes ?? [])
+        const actual = new Set(mesesTrabajados(trabajador, prev[trabajador.dni]))
         if (actual.has(mes)) actual.delete(mes)
         else actual.add(mes)
         return { ...prev, [trabajador.dni]: [...actual] }
@@ -347,19 +639,7 @@ type ImportedWorker = {
           ))}
         </div>
 
-        <div className="mt-4 flex flex-wrap gap-2">
-          <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 text-xs font-semibold text-emerald-400">
-            {periodos.filter((p) => p.estado === 'Trabajó').length} meses trabajados
-          </div>
-
-          <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-xs font-semibold text-amber-400">
-            {periodos.filter((p) => p.estado === 'Reingresó').length} reingresos
-          </div>
-
-          <div className="rounded-lg border border-slate-500/30 bg-slate-500/10 px-3 py-1.5 text-xs font-semibold text-slate-400">
-            {periodos.filter((p) => p.estado === 'No trabajó').length} sin trabajar
-          </div>
-        </div>
+        <ResumenPeriodos periodos={periodos} />
       </div>
     )
   }
@@ -380,7 +660,7 @@ type ImportedWorker = {
     const fechas = fechasEditadas[t.dni] ?? {}
     const incidencias = incidenciasEditadas[t.dni] ?? t.incidencias ?? []
     const noLaborados = calcularDiasNoLaborados(
-      incidencias.map(inc => ({
+      incidenciasAplicables(incidencias).map(inc => ({
         cantidadDias: inc.cantidadDias,
         diasNeto: inc.diasNeto,
         fechaInicio: parseIncFecha(inc.fechaInicio),
@@ -389,20 +669,22 @@ type ImportedWorker = {
       jornada ?? 5,
       new Set(t.feriados ?? [])
     )
-    const mesesPresentes = new Set(mesesEditados[t.dni] ?? t.mesesPresentes ?? [])
+    const mesesConDias = new Set(mesesTrabajados(t, mesesEditados[t.dni]))
     // DÍAS POSIBLES / LABORABLES: los días posibles del formato CITIKOLD (columna L)
     // tienen prioridad; en otros formatos se usan los días por mes cargados ("dias mes").
     const posibles = t.diasPosibles
       ?? (t.laborablesPorMes
-        ? months.reduce((sum, mes) => sum + (mesesPresentes.has(mes) ? (t.laborablesPorMes?.[mes] ?? 0) : 0), 0)
+        ? months.reduce((sum, mes) => sum + (mesesConDias.has(mes) ? (t.laborablesPorMes?.[mes] ?? 0) : 0), 0)
         : (t.diasTrabajados?.total ?? 0))
     // DÍAS EFECTIVOS = DÍAS POSIBLES − DÍAS NO LABORADOS (un solo descuento)
     const efectivos = Math.max(0, posibles - noLaborados)
+    const ingreso = fechaIngresoTrabajador(t, fechas.fechaInicio)
+    const cese = fechaCeseTrabajador(t, fechas.fechaCese)
 
     const observaciones: string[] = []
     if (t.remuneraciones.total <= 0) observaciones.push('Sin remuneraciones registradas para el ejercicio.')
     if (posibles <= 0) observaciones.push('Sin días laborados registrados para el ejercicio.')
-    if (!fechas.fechaInicio && !t.fechaInicio) observaciones.push('Fecha de ingreso pendiente de registrar.')
+    if (!ingreso.iso) observaciones.push('Fecha de ingreso pendiente de registrar.')
     if (!`${t.apellidoPaterno}${t.apellidoMaterno}${t.nombres}`.trim()) observaciones.push('Nombres incompletos en la base importada.')
     if (!jornadas[t.dni] && !t.jornada) observaciones.push('Jornada no disponible en el archivo; no se asume automáticamente. Verifica la jornada real antes de reprocesar.')
     if (noLaborados > posibles) observaciones.push(`Los días no laborados (${number.format(noLaborados)}) superan los días posibles (${number.format(posibles)}); revisa las incidencias.`)
@@ -459,11 +741,19 @@ type ImportedWorker = {
               { label: 'Código', valor: t.dni },
               {
                 label: 'Ingreso',
-                valor: <Input type="date" value={formatInputDate(fechas.fechaInicio ?? t.fechaInicio)} onChange={(e) => setFechasEditadas((prev) => ({ ...prev, [t.dni]: { ...prev[t.dni], fechaInicio: e.target.value || undefined } }))} />,
+                valor: <Input type="date" value={ingreso.iso} onChange={(e) => setFechasEditadas((prev) => ({ ...prev, [t.dni]: { ...prev[t.dni], fechaInicio: e.target.value || undefined } }))} />,
               },
               {
                 label: 'Cese',
-                valor: <Input type="date" value={formatInputDate(fechas.fechaCese ?? t.fechaCese)} onChange={(e) => setFechasEditadas((prev) => ({ ...prev, [t.dni]: { ...prev[t.dni], fechaCese: e.target.value || undefined } }))} />,
+                valor: <Input type="date" value={cese.iso} onChange={(e) => setFechasEditadas((prev) => ({ ...prev, [t.dni]: { ...prev[t.dni], fechaCese: e.target.value || undefined } }))} />,
+              },
+              {
+                label: 'Inicio (fecha normalizada)',
+                valor: ingreso.iso ? ingreso.etiqueta : <span className="font-normal text-muted-foreground">{SIN_DATO}</span>,
+              },
+              {
+                label: 'Cese (fecha normalizada)',
+                valor: cese.iso ? cese.etiqueta : <span className="font-normal text-muted-foreground">{SIN_DATO}</span>,
               },
               { label: 'Estado', valor: <EstadoValidacionBadge estado={estado} /> },
             ]}
@@ -549,36 +839,78 @@ type ImportedWorker = {
         </DetalleSection>
 
         {/* Incidencias */}
-        <DetalleSection titulo="Incidencias" descripcion="Registra, corrige o elimina las incidencias que restan días efectivos.">
+        <DetalleSection titulo="Incidencias" descripcion="Cada incidencia conserva el período, el tipo y los días que aporta el archivo. Registra, corrige o elimina las que restan días efectivos.">
           {incidencias.length === 0 ? (
             <p className="rounded-lg border border-border/60 bg-background px-4 py-6 text-center text-sm text-muted-foreground">No tiene incidencias registradas.</p>
           ) : (
             <div className="space-y-3">
-              {incidencias.map((incidencia, index) => (
-                <div key={`${incidencia.codigo}-${index}`} className="grid grid-cols-2 gap-3 rounded-lg border border-border/60 bg-background p-3 sm:grid-cols-[1fr_1fr_1fr_auto]">
-                  <div className="col-span-2 sm:col-span-1">
-                    <p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Tipo</p>
-                    <Input value={incidencia.descripcion} onChange={(e) => actualizarIncidencia(index, { descripcion: e.target.value })} placeholder="Descripción de la incidencia" />
-                  </div>
-                  <div>
-                    <p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Fecha inicio</p>
-                    <Input type="date" value={formatInputDate(incidencia.fechaInicio)} onChange={(e) => actualizarIncidencia(index, { fechaInicio: e.target.value || null })} />
-                  </div>
-                  <div>
-                    <p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Fecha fin</p>
-                    <Input type="date" value={formatInputDate(incidencia.fechaFin)} onChange={(e) => actualizarIncidencia(index, { fechaFin: e.target.value || null })} />
-                  </div>
-                  <div className="col-span-2 flex items-end gap-2 sm:col-span-1">
-                    <div className="flex-1">
-                      <p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Días</p>
-                      <Input type="number" min={0} value={incidencia.cantidadDias} onChange={(e) => actualizarIncidencia(index, { cantidadDias: Number(e.target.value) || 0 })} />
+              {incidencias.map((incidencia, index) => {
+                const periodo = formatearPeriodo(incidencia.periodo)
+                const rango = `${formatInputDate(incidencia.fechaInicio) || '—'} al ${formatInputDate(incidencia.fechaFin) || '—'}`
+                const dias = `${incidencia.cantidadDias} ${incidencia.cantidadDias === 1 ? 'día' : 'días'}`
+                const sinPeriodoNiFechas = !periodo && rango === '— al —'
+                const pendiente = incidencia.estado === 'no_identificada'
+
+                return (
+                  <div key={`${incidencia.codigo}-${index}`} className="rounded-lg border border-border/60 bg-background p-3">
+                    <div className="mb-3 flex flex-wrap items-center gap-2">
+                      <Badge variant="outline" className="font-medium">
+                        {incidencia.descripcion || incidencia.tipo || 'Incidencia sin tipo'}
+                      </Badge>
+                      <span className="text-sm font-semibold">
+                        {periodo ? `${periodo} · ${dias}` : `${rango} · ${dias}`}
+                      </span>
+                      {pendiente && (
+                        <Badge variant="outline" className="border-amber-500/30 bg-amber-500/10 text-amber-400">
+                          Pendiente de identificar
+                        </Badge>
+                      )}
+                      {sinPeriodoNiFechas && !pendiente && (
+                        <Badge variant="outline" className="border-slate-500/30 bg-slate-500/10 text-slate-400">
+                          Período no disponible
+                        </Badge>
+                      )}
                     </div>
-                    <Button variant="ghost" size="icon" onClick={() => eliminarIncidencia(index)} aria-label="Eliminar incidencia">
-                      <Trash2 className="size-4" />
-                    </Button>
+
+                    {pendiente && incidencia.motivo && (
+                      <p className="mb-3 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-500">
+                        {incidencia.motivo}
+                      </p>
+                    )}
+
+                    <div className="grid grid-cols-2 gap-3 sm:grid-cols-[1fr_1fr_1fr_auto]">
+                      <div className="col-span-2 sm:col-span-1">
+                        <p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Tipo</p>
+                        <Input value={incidencia.descripcion} onChange={(e) => actualizarIncidencia(index, { descripcion: e.target.value })} placeholder="Descripción de la incidencia" />
+                      </div>
+                      <div>
+                        <p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Fecha inicio</p>
+                        <Input type="date" value={formatInputDate(incidencia.fechaInicio)} onChange={(e) => actualizarIncidencia(index, { fechaInicio: e.target.value || null })} />
+                      </div>
+                      <div>
+                        <p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Fecha fin</p>
+                        <Input type="date" value={formatInputDate(incidencia.fechaFin)} onChange={(e) => actualizarIncidencia(index, { fechaFin: e.target.value || null })} />
+                      </div>
+                      <div className="col-span-2 flex items-end gap-2 sm:col-span-1">
+                        <div className="flex-1">
+                          <p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Días</p>
+                          <Input type="number" min={0} value={incidencia.cantidadDias} onChange={(e) => actualizarIncidencia(index, { cantidadDias: Number(e.target.value) || 0 })} />
+                        </div>
+                        <Button variant="ghost" size="icon" onClick={() => eliminarIncidencia(index)} aria-label="Eliminar incidencia">
+                          <Trash2 className="size-4" />
+                        </Button>
+                      </div>
+                    </div>
+
+                    {periodo && (
+                      <p className="mt-2 text-[11px] text-muted-foreground">
+                        Período en el archivo: <span className="font-medium text-foreground">{incidencia.periodo?.texto || periodo}</span>
+                        {incidencia.periodo?.anio ? ` · Año ${incidencia.periodo.anio}` : ' · El archivo no indica el año'}
+                      </p>
+                    )}
                   </div>
-                </div>
-              ))}
+                )
+              })}
             </div>
           )}
           <Button variant="outline" size="sm" className="mt-3" onClick={agregarIncidencia}>
@@ -705,7 +1037,7 @@ type ImportedWorker = {
                     const jornada = jornadas[t.dni] ?? t.jornada
                     const incidencias = incidenciasEditadas[t.dni] ?? t.incidencias ?? []
                     const noLaborados = calcularDiasNoLaborados(
-                      incidencias.map(inc => ({
+                      incidenciasAplicables(incidencias).map(inc => ({
                         cantidadDias: inc.cantidadDias,
                         diasNeto: inc.diasNeto,
                         fechaInicio: parseIncFecha(inc.fechaInicio),
@@ -817,6 +1149,31 @@ type ImportedWorker = {
 
   return texto.trim()
 }
+  function detalleAuditoriaRemuneracion(resultado: { importados: ImportedWorkerMotor[]; modo?: string }): string {
+    const resumenes = resultado.importados
+      .map((trabajador) => trabajador.remuneracionResumen)
+      .filter((resumen): resumen is ResumenRemuneracion => Boolean(resumen))
+
+    if (resumenes.length === 0) return ''
+
+    const lineas: string[] = []
+    const totalMeses = resumenes.filter((resumen) => !resumen.mensualDisponible && resumen.totalDeclarado !== undefined).length
+    const duplicados = resumenes.reduce((acc, resumen) => acc + resumen.duplicados, 0)
+    const conflictos = resumenes.reduce((acc, resumen) => acc + resumen.conflictos.length, 0)
+    const desconocidos = [...new Set(resumenes.flatMap((resumen) => resumen.conceptosDesconocidos))]
+    const noRemunerativos = [...new Set(resumenes.flatMap((resumen) => resumen.conceptosExcluidos))]
+
+    lineas.push(`\nDetalle de importación: ${resultado.modo === 'atomico' ? 'conceptos por período' : 'cuadro mensual'}`)
+    if (totalMeses > 0) lineas.push(`• ${totalMeses} trabajador(es) solo con total anual.`)
+    if (duplicados > 0) lineas.push(`• ${duplicados} registro(s) duplicado(s) descartado(s).`)
+    if (conflictos > 0) lineas.push(`• ${conflictos} diferencia(s) entre total declarado y detalle.`)
+    if (desconocidos.length > 0) lineas.push(`• Conceptos fuera del catálogo excluidos: ${desconocidos.join(', ')}.`)
+    if (noRemunerativos.length > 0) lineas.push(`• Conceptos no remunerativos excluidos: ${noRemunerativos.join(', ')}.`)
+    lineas.push('\nRevisa el detalle en Validación.')
+
+    return lineas.join('\n')
+  }
+
   const handleFile = async (file: File) => {
       setLoading(true)
 
@@ -825,6 +1182,24 @@ type ImportedWorker = {
         const buffer = await file.arrayBuffer()
 
         await workbook.xlsx.load(buffer)
+
+        if (isRemunerations) {
+          const resultado = extraerRemuneraciones(workbook, trabajadores, { loteId: file.name })
+          if (resultado.importados.length > 0) {
+            setTrabajadores(adaptarTrabajadoresMotor(resultado.trabajadores))
+            setImportedFile(file.name)
+            alert(`Excel leído correctamente.\n\nTrabajadores encontrados: ${resultado.importados.length}${detalleAuditoriaRemuneracion(resultado)}`)
+            return
+          }
+        } else {
+          const resultado = extraerDias(workbook, trabajadores)
+          if (resultado.diasImportados > 0) {
+            setTrabajadoresDias?.(adaptarTrabajadoresMotor(resultado.trabajadores))
+            setDiasImportados(resultado.diasImportados)
+            setImportedFile(file.name)
+            return
+          }
+        }
 
         if (!isRemunerations) {
   const normalizeHeader = (value: ExcelJS.CellValue) => {
@@ -897,10 +1272,33 @@ type ImportedWorker = {
   const citikoldIncidencias =
     workbook.getWorksheet('DIAS NO LABORADOS')
 
+  // Formato "DIAS + FALTAS": matriz mensual de días laborados y de faltas,
+  // con los encabezados (DNI y meses) en la fila 1 de cada hoja.
+  const worksheetDiasMatriz =
+    workbook.getWorksheet('DIAS')
+
+  const worksheetFaltas =
+    workbook.getWorksheet('FALTAS')
+
+  const detectarColumnasMensuales = (ws: ExcelJS.Worksheet): Map<string, number> => {
+    const columnas = new Map<string, number>()
+    ws.getRow(1).eachCell((cell, col) => {
+      const nombre = normalizeHeader(cell.value)
+      const mes = months.find((m) => m.toUpperCase() === nombre)
+      if (mes) columnas.set(mes, col)
+    })
+    return columnas
+  }
+
+  const hayFormatoDiasFaltas =
+    !!worksheetDiasMatriz &&
+    detectarColumnasMensuales(worksheetDiasMatriz).size > 0
+
   if (
     !worksheetDiasMes &&
     !citikoldDias &&
-    !citikoldIncidencias
+    !citikoldIncidencias &&
+    !hayFormatoDiasFaltas
   ) {
     throw new Error(
       `No se encontró la hoja "dias mes".
@@ -922,7 +1320,6 @@ ${nombresHojas.join(', ')}`
     const daysByDniCitikold = new Map<string, MonthlyValues>()
     const incidenciasPorDniCitikold = new Map<string, IncidenciaImportada[]>()
     const fechasPorDniCitikold = new Map<string, { fechaInicio?: Date; fechaCese?: Date }>()
-    const mesesPorDniCitikold = new Map<string, string[]>()
     const laborablesPorDniCitikold = new Map<string, MonthlyValues>()
     const jornadaPorDniCitikold = new Map<string, Jornada>()
     const diasPosiblesPorDni = new Map<string, number>()
@@ -1119,18 +1516,11 @@ ${nombresHojas.join(', ')}`
         ).trim()
         const cantidadDias = toNumber(row.getCell(11).value)
 
-        // Capturar el valor del MES (columna 1) de la hoja de incidencias
-        // esto permite saber exactamente en cuáles meses el trabajador tuvo incidencias
+        // El MES (columna 1) de la hoja de incidencias es el período al que
+        // pertenece cada incidencia: se conserva en la incidencia.
         const mesCrudo = String(row.getCell(1).value ?? '').trim().toUpperCase()
         const mesNormalizado = mesCrudo === 'SETIEMBRE' ? 'SEPTIEMBRE' : mesCrudo
         const mesEncontrado = months.find(m => m.toUpperCase() === mesNormalizado)
-        if (mesEncontrado) {
-          const mesesDe = mesesPorDniCitikold.get(dni) ?? []
-          if (!mesesDe.includes(mesEncontrado)) {
-            mesesDe.push(mesEncontrado)
-          }
-          mesesPorDniCitikold.set(dni, mesesDe)
-        }
 
         if (
           descripcion === '[object Object]' ||
@@ -1139,6 +1529,18 @@ ${nombresHojas.join(', ')}`
         ) {
           return
         }
+
+        // El período del archivo se conserva en la incidencia: mes de la hoja y
+        // año de las fechas del trabajador (o el del ejercicio, si el archivo
+        // lo aporta). Si no hay mes identificable, el período queda sin dato.
+        const anioPeriodo = fechasPorDniCitikold.get(dni)?.fechaInicio?.getUTCFullYear() ?? null
+        const periodoCitikold: PeriodoIncidencia | null = mesEncontrado
+          ? {
+            texto: MONTH_LABELS[mesEncontrado],
+            anio: anioPeriodo,
+            mes: months.indexOf(mesEncontrado) + 1,
+          }
+          : leerPeriodo(row.getCell(1).value)
 
         const existentes =
           incidenciasPorDniCitikold.get(dni) ?? []
@@ -1150,6 +1552,7 @@ ${nombresHojas.join(', ')}`
           diasNeto: toNumber(row.getCell(14).value) || undefined,
           fechaInicio: row.getCell(15).value,
           fechaFin: row.getCell(16).value,
+          periodo: periodoCitikold,
         })
         incidenciasPorDniCitikold.set(dni, existentes)
       })
@@ -1317,6 +1720,157 @@ ${nombresHojas.join(', ')}`
       'Incidencias:',
       incidenciasPorDniCitikold.size
     )
+
+    return
+  }
+
+  if (!worksheetDiasMes && hayFormatoDiasFaltas) {
+    // ============================================================
+    // FORMATO DIAS + FALTAS: matriz mensual de días laborados (hoja
+    // "DIAS") y de faltas / días no laborados (hoja "FALTAS"), con
+    // los encabezados en la fila 1.
+    // ============================================================
+    console.log('FORMATO DIAS + FALTAS DE DÍAS DETECTADO')
+
+    const anioEjercicioArchivo = inferirAnioEjercicio(workbook)
+
+    const columnasDias = detectarColumnasMensuales(worksheetDiasMatriz!)
+    const columnasFaltas = worksheetFaltas ? detectarColumnasMensuales(worksheetFaltas) : new Map<string, number>()
+
+    const leerColumnaEncabezado = (ws: ExcelJS.Worksheet, nombres: string[]): number | null => {
+      let encontrada: number | null = null
+      ws.getRow(1).eachCell((cell, col) => {
+        const nombre = normalizeHeader(cell.value)
+        if (!encontrada && nombres.includes(nombre)) encontrada = col
+      })
+      return encontrada
+    }
+
+    const colDniDias = leerColumnaEncabezado(worksheetDiasMatriz!, ['DNI']) ?? 1
+    const colApDias = leerColumnaEncabezado(worksheetDiasMatriz!, ['APELLIDO PATERNO'])
+    const colAmDias = leerColumnaEncabezado(worksheetDiasMatriz!, ['APELLIDO MATERNO'])
+    const colNombresDias = leerColumnaEncabezado(worksheetDiasMatriz!, ['NOMBRES'])
+
+    const diasPorDni = new Map<string, { values: MonthlyValues; apellidoPaterno: string; apellidoMaterno: string; nombres: string }>()
+
+    worksheetDiasMatriz!.eachRow((row, rowNumber) => {
+      if (rowNumber < 2) return
+      const dni = normalizeDni(row.getCell(colDniDias).value)
+      if (!dni) return
+
+      const values = { ...MESES_EN_CERO }
+      for (const [mes, col] of columnasDias) {
+        values[mes as keyof MonthlyValues] = toNumber(row.getCell(col).value)
+      }
+      values.total = months.reduce((sum, mes) => sum + values[mes], 0)
+
+      diasPorDni.set(dni, {
+        values,
+        apellidoPaterno: colApDias ? limpiarNombre(row.getCell(colApDias).value) : '',
+        apellidoMaterno: colAmDias ? limpiarNombre(row.getCell(colAmDias).value) : '',
+        nombres: colNombresDias ? limpiarNombre(row.getCell(colNombresDias).value) : '',
+      })
+    })
+
+    const incidenciasPorDni = new Map<string, IncidenciaImportada[]>()
+    const nombresDesdeFaltas = new Map<string, { apellidoPaterno: string; apellidoMaterno: string; nombres: string }>()
+
+    if (worksheetFaltas && columnasFaltas.size > 0) {
+      const colDniFaltas = leerColumnaEncabezado(worksheetFaltas, ['DNI']) ?? 1
+      const colApFaltas = leerColumnaEncabezado(worksheetFaltas, ['APELLIDO PATERNO'])
+      const colAmFaltas = leerColumnaEncabezado(worksheetFaltas, ['APELLIDO MATERNO'])
+      const colNombresFaltas = leerColumnaEncabezado(worksheetFaltas, ['NOMBRES'])
+
+      worksheetFaltas.eachRow((row, rowNumber) => {
+        if (rowNumber < 2) return
+        const dni = normalizeDni(row.getCell(colDniFaltas).value)
+        if (!dni) return
+
+        nombresDesdeFaltas.set(dni, {
+          apellidoPaterno: colApFaltas ? limpiarNombre(row.getCell(colApFaltas).value) : '',
+          apellidoMaterno: colAmFaltas ? limpiarNombre(row.getCell(colAmFaltas).value) : '',
+          nombres: colNombresFaltas ? limpiarNombre(row.getCell(colNombresFaltas).value) : '',
+        })
+
+        const incidencias: IncidenciaImportada[] = []
+        for (const [mes, col] of columnasFaltas) {
+          const cantidadDias = toNumber(row.getCell(col).value)
+          if (cantidadDias > 0) {
+            const nombreMes = mes as (typeof months)[number]
+            incidencias.push({
+              dni,
+              codigo: '',
+              descripcion: 'Faltas',
+              cantidadDias,
+              fechaInicio: null,
+              fechaFin: null,
+              // La columna del mes es el período de la incidencia.
+              periodo: {
+                texto: MONTH_LABELS[nombreMes],
+                anio: anioEjercicioArchivo,
+                mes: months.indexOf(nombreMes) + 1,
+              },
+            })
+          }
+        }
+        if (incidencias.length > 0) incidenciasPorDni.set(dni, incidencias)
+      })
+    }
+
+    setDiasImportados(diasPorDni.size)
+
+    setTrabajadores((current) => {
+      const actualizados = current.map((trabajador) => {
+        const clave = String(trabajador.dni).trim().padStart(8, '0')
+        const info = diasPorDni.get(clave)
+        if (!info) return trabajador
+
+        const nombresFaltas = nombresDesdeFaltas.get(clave)
+        const incidencias = incidenciasPorDni.get(clave) ?? []
+        const mesesDias = months.filter((mes) => (info.values[mes] ?? 0) > 0)
+
+        return {
+          ...trabajador,
+          apellidoPaterno: trabajador.apellidoPaterno || info.apellidoPaterno || nombresFaltas?.apellidoPaterno || '',
+          apellidoMaterno: trabajador.apellidoMaterno || info.apellidoMaterno || nombresFaltas?.apellidoMaterno || '',
+          nombres: trabajador.nombres || info.nombres || nombresFaltas?.nombres || '',
+          diasTrabajados: info.values,
+          diasPosibles: info.values.total,
+          incidencias,
+          mesesDias,
+          mesesPresentes: mesesDias,
+        }
+      })
+
+      const nuevos = [...diasPorDni.keys()]
+        .filter((dni) => !current.some((t) => String(t.dni).trim().padStart(8, '0') === dni))
+        .map((dni) => {
+          const info = diasPorDni.get(dni)!
+          const nombresFaltas = nombresDesdeFaltas.get(dni)
+          const mesesDias = months.filter((mes) => (info.values[mes] ?? 0) > 0)
+          return {
+            dni,
+            apellidoPaterno: info.apellidoPaterno || nombresFaltas?.apellidoPaterno || '',
+            apellidoMaterno: info.apellidoMaterno || nombresFaltas?.apellidoMaterno || '',
+            nombres: info.nombres || nombresFaltas?.nombres || '',
+            fechaInicio: null,
+            fechaCese: null,
+            remuneraciones: MESES_EN_CERO,
+            diasTrabajados: info.values,
+            diasPosibles: info.values.total,
+            incidencias: incidenciasPorDni.get(dni) ?? [],
+            mesesDias,
+            mesesPresentes: mesesDias,
+          }
+        })
+
+      return [...actualizados, ...nuevos]
+    })
+
+    setImportedFile(file.name)
+
+    console.log('=== EXTRACCIÓN DE DÍAS (DIAS + FALTAS) TERMINADA ===')
+    console.log('Días registrados:', diasPorDni.size, 'Incidencias:', incidenciasPorDni.size)
 
     return
   }
@@ -1830,30 +2384,11 @@ incidenciasPorDni.set(claveDni, incidenciasExistentes)
   )
 }
   // ============================================================
-  // PASO 8: COMPARAR LOS DNI CON LOS TRABAJADORES
+  // PASO 8: GUARDAR LOS DÍAS EXTRAÍDOS
   // ============================================================
-  const noEncontrados =
-    [
-      ...daysByDni.keys(),
-    ].filter(
-      (dni) =>
-        !trabajadores.some(
-          (trabajador) =>
-            trabajador.dni === dni
-        )
-    )
-
-  const coincidentes =
-    daysByDni.size -
-    noEncontrados.length
-
   setDiasImportados(
   daysByDni.size
 )
-
-  // ============================================================
-  // PASO 9: GUARDAR LOS DÍAS EXTRAÍDOS
-  // ============================================================
 
 setTrabajadores((current) => {
   const actualizados = current.map((trabajador) => {
@@ -1980,9 +2515,57 @@ const worksheetRem = workbook.getWorksheet('REM')
     return Number.isFinite(numero) ? numero : 0
   }
 
+      const normalizeTituloRem = (valor: ExcelJS.CellValue): string =>
+        String(typeof valor === 'object' && valor !== null && 'text' in valor ? valor.text ?? '' : valor ?? '')
+          .normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '')
+          .trim()
+          .replace(/\s+/g, ' ')
+          .toUpperCase()
+
+      // Formato "REM cabecera": hoja REM con los encabezados (DNI, apellidos,
+      // nombres, meses) en la fila 1 y los datos desde la fila 2.
+      const esFormatoRemCabeceras = (() => {
+        if (esFormatoIngresos || !worksheetRem) return false
+        const fila = worksheetRem.getRow(1)
+        let tieneDni = false
+        let mesesEncontrados = 0
+        fila.eachCell((cell) => {
+          const nombre = normalizeTituloRem(cell.value)
+          if (nombre === 'DNI') tieneDni = true
+          if (months.some((m) => m.toUpperCase() === nombre)) mesesEncontrados++
+        })
+        return tieneDni && mesesEncontrados >= 1
+      })()
+
+      const columnaMesRemCabeceras = new Map<string, number>()
+      if (esFormatoRemCabeceras && worksheetRem) {
+        worksheetRem.getRow(1).eachCell((cell, col) => {
+          const nombre = normalizeTituloRem(cell.value)
+          const mes = months.find((m) => m.toUpperCase() === nombre)
+          if (mes) columnaMesRemCabeceras.set(mes, col)
+        })
+      }
+
+      const buscarColumnaRemCabeceras = (nombres: string[], defecto: number): number => {
+        if (!esFormatoRemCabeceras || !worksheetRem) return defecto
+        let encontrada: number | null = null
+        worksheetRem.getRow(1).eachCell((cell, col) => {
+          if (encontrada === null && nombres.includes(normalizeTituloRem(cell.value))) encontrada = col
+        })
+        return encontrada ?? defecto
+      }
+
+      const colDniRemCabeceras = buscarColumnaRemCabeceras(['DNI'], 1)
+      const colApRemCabeceras = buscarColumnaRemCabeceras(['APELLIDO PATERNO'], 2)
+      const colAmRemCabeceras = buscarColumnaRemCabeceras(['APELLIDO MATERNO'], 3)
+      const colNombresRemCabeceras = buscarColumnaRemCabeceras(['NOMBRES'], 4)
+      const colInicioRemCabeceras = buscarColumnaRemCabeceras(['FECHA DE INICIO', 'FECHA INGRESO'], 5)
+      const colCeseRemCabeceras = buscarColumnaRemCabeceras(['FECHA DE CESE', 'FECHA CESE'], 6)
+
 
       worksheet.eachRow((row: ExcelJS.Row) => {
-    const dni = row.getCell(2).value
+    const dni = row.getCell(esFormatoRemCabeceras ? colDniRemCabeceras : 2).value
 
     // Solo procesamos filas que realmente tengan un DNI válido
   const dniTexto = String(dni ?? '')
@@ -2033,6 +2616,37 @@ const worksheetRem = workbook.getWorksheet('REM')
 
       mesesRemuneraciones,
 
+      mesesPresentes: mesesRemuneraciones,
+    })
+    return
+  }
+
+  if (esFormatoRemCabeceras) {
+    const apellidoPaterno = limpiarNombre(row.getCell(colApRemCabeceras).value)
+    const apellidoMaterno = limpiarNombre(row.getCell(colAmRemCabeceras).value)
+    const nombres = limpiarNombre(row.getCell(colNombresRemCabeceras).value)
+    const fechaInicio = row.getCell(colInicioRemCabeceras).value
+    const fechaCese = row.getCell(colCeseRemCabeceras).value
+
+    const remuneraciones: MonthlyValues = { ...MESES_EN_CERO }
+    for (const [mes, col] of columnaMesRemCabeceras) {
+      remuneraciones[mes as keyof MonthlyValues] = getExcelNumber(row.getCell(col).value)
+    }
+    remuneraciones.total = months.reduce((sum, mes) => sum + remuneraciones[mes], 0)
+
+    const mesesRemuneraciones = months.filter(
+      (mes) => remuneraciones[mes] > 0
+    )
+
+    trabajadoresImportados.push({
+      dni: dniFinal,
+      apellidoPaterno,
+      apellidoMaterno,
+      nombres,
+      fechaInicio,
+      fechaCese,
+      remuneraciones,
+      mesesRemuneraciones,
       mesesPresentes: mesesRemuneraciones,
     })
     return
@@ -2348,10 +2962,10 @@ trabajadoresImportados.push({
               {trabajador.dni}
             </span>
             <span className="min-w-0 whitespace-nowrap">
-              {formatExcelDate(trabajador.fechaInicio)}
+              {fechaIngresoTrabajador(trabajador).etiqueta}
             </span>
             <span className="min-w-0 whitespace-nowrap">
-              {formatExcelDate(trabajador.fechaCese)}
+              {fechaCeseTrabajador(trabajador).etiqueta}
             </span>
           </div>
           {/* DETALLE DEL TRABAJADOR */}
@@ -2502,19 +3116,30 @@ trabajadoresImportados.push({
 
         {trabajador.incidencias && trabajador.incidencias.length > 0 ? (
           <div className="space-y-2">
-            {trabajador.incidencias.map((incidencia, incidenciaIndex) => (
-              <div
-                key={`${incidencia.codigo}-${incidenciaIndex}`}
-                className="rounded-lg border border-border/60 bg-background p-3 text-sm"
-              >
-                <p className="font-medium">
-                  {incidencia.descripcion || incidencia.codigo || 'Incidencia registrada'}
-                </p>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  Del {formatExcelDate(incidencia.fechaInicio)} al {formatExcelDate(incidencia.fechaFin)} · {incidencia.cantidadDias} días
-                </p>
-              </div>
-            ))}
+            {trabajador.incidencias.map((incidencia, incidenciaIndex) => {
+              const periodo = formatearPeriodo(incidencia.periodo)
+              const rango = `${formatExcelDate(incidencia.fechaInicio)} al ${formatExcelDate(incidencia.fechaFin)}`
+              const dias = `${incidencia.cantidadDias} ${incidencia.cantidadDias === 1 ? 'día' : 'días'}`
+
+              return (
+                <div
+                  key={`${incidencia.codigo}-${incidenciaIndex}`}
+                  className="rounded-lg border border-border/60 bg-background p-3 text-sm"
+                >
+                  <p className="font-medium">
+                    {incidencia.descripcion || incidencia.codigo || 'Incidencia registrada'}
+                  </p>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {periodo ? `${periodo} · ${dias}` : `${rango} · ${dias}`}
+                  </p>
+                  {!periodo && !formatExcelDate(incidencia.fechaInicio) && (
+                    <p className="mt-1 text-[11px] text-amber-400">
+                      Período no disponible en el archivo: queda pendiente de identificar.
+                    </p>
+                  )}
+                </div>
+              )
+            })}
           </div>
         ) : (
           <p className="text-sm text-muted-foreground">
@@ -2561,7 +3186,7 @@ trabajadoresImportados.push({
       const jornada = (jornadas[t.dni] ?? t.jornada) as Jornada | undefined
       const incidencias = incidenciasEditadas[t.dni] ?? t.incidencias ?? []
       const noLaborados = calcularDiasNoLaborados(
-        incidencias.map(inc => ({
+        incidenciasAplicables(incidencias).map(inc => ({
           cantidadDias: inc.cantidadDias,
           diasNeto: inc.diasNeto,
           fechaInicio: parseIncFecha(inc.fechaInicio),
@@ -2570,12 +3195,12 @@ trabajadoresImportados.push({
         jornada ?? 5,
         new Set(t.feriados ?? [])
       )
-      const mesesPresentes = new Set(mesesEditados[t.dni] ?? t.mesesPresentes ?? [])
+      const mesesConDias = new Set(mesesTrabajados(t, mesesEditados[t.dni]))
       // DÍAS POSIBLES / LABORABLES: prioridad a los días posibles del formato
       // CITIKOLD (columna L); en otros formatos se usan los días por mes cargados.
       const posibles = t.diasPosibles
         ?? (t.laborablesPorMes
-          ? months.reduce((sum, mes) => sum + (mesesPresentes.has(mes) ? (t.laborablesPorMes?.[mes] ?? 0) : 0), 0)
+          ? months.reduce((sum, mes) => sum + (mesesConDias.has(mes) ? (t.laborablesPorMes?.[mes] ?? 0) : 0), 0)
           : (t.diasTrabajados?.total ?? 0))
       // DÍAS EFECTIVOS = DÍAS POSIBLES − DÍAS NO LABORADOS (un solo descuento)
       const efectivos = Math.max(0, posibles - noLaborados)
@@ -2603,62 +3228,9 @@ trabajadoresImportados.push({
   const [detalleDni, setDetalleDni] = useState<string | null>(null)
   const [reprocesado, setReprocesado] = useState(false)
   const listoParaProcesar = trabajadores.length > 0 && trabajadoresDias.length > 0
-  const trabajadoresUnificados = useMemo(() => {
-    const mapa = new Map<string, ImportedWorker>()
-
-    const agregar = (trabajador: ImportedWorker) => {
-      const dni = String(trabajador.dni).trim().padStart(8, '0')
-      const existente = mapa.get(dni)
-
-      if (!existente) {
-        mapa.set(dni, { ...trabajador, dni })
-        return
-      }
-
-      mapa.set(dni, {
-        ...existente,
-        ...trabajador,
-        dni,
-        apellidoPaterno: existente.apellidoPaterno || trabajador.apellidoPaterno || '',
-        apellidoMaterno: existente.apellidoMaterno || trabajador.apellidoMaterno || '',
-        nombres: existente.nombres || trabajador.nombres || '',
-        fechaInicio: existente.fechaInicio ?? trabajador.fechaInicio,
-        fechaCese: existente.fechaCese ?? trabajador.fechaCese,
-        remuneraciones:
-          existente.remuneraciones.total > 0
-            ? existente.remuneraciones
-            : trabajador.remuneraciones,
-        diasTrabajados: existente.diasTrabajados ?? trabajador.diasTrabajados,
-        incidencias: [
-          ...(existente.incidencias ?? []),
-          ...(trabajador.incidencias ?? []),
-        ],
-        mesesRemuneraciones: Array.from(
-          new Set([
-            ...(existente.mesesRemuneraciones ?? []),
-            ...(trabajador.mesesRemuneraciones ?? []),
-          ])
-        ),
-        mesesDias: Array.from(
-          new Set([
-            ...(existente.mesesDias ?? []),
-            ...(trabajador.mesesDias ?? []),
-          ])
-        ),
-        mesesPresentes: Array.from(
-          new Set([
-            ...(existente.mesesPresentes ?? []),
-            ...(trabajador.mesesPresentes ?? []),
-          ])
-        ),
-      })
-    }
-
-    trabajadoresDias.forEach(agregar)
-    trabajadores.forEach(agregar)
-
-    return [...mapa.values()]
-  }, [trabajadores, trabajadoresDias])
+  // Consolidado de la carga de días y la de remuneraciones: la misma función
+  // que usa el motor, para que Validación no tenga una segunda fuente de datos.
+  const trabajadoresUnificados = useMemo(() => consolidarTrabajadores(trabajadoresDias, trabajadores), [trabajadores, trabajadoresDias])
 
   const resultadosCoinciden =
     results.length > 0 &&
@@ -2757,16 +3329,22 @@ trabajadoresImportados.push({
 </div>
 {activeStep === 1 ? (
   <div className="flex flex-col gap-6">
-    <div>
-      <p className="mb-1 text-xs font-semibold uppercase tracking-[0.18em] text-primary">
-        Validación
-      </p>
-      <h2 className="text-xl font-semibold tracking-tight">
-        Validación de trabajadores
-      </h2>
-      <p className="mt-1 text-sm text-muted-foreground">
-        Revisa la información consolidada de remuneraciones y días, corrige jornada, períodos, fechas e incidencias y reprocesa los días y resultados.
-      </p>
+    <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+      <div>
+        <p className="mb-1 text-xs font-semibold uppercase tracking-[0.18em] text-primary">
+          Validación
+        </p>
+        <h2 className="text-xl font-semibold tracking-tight">
+          Validación de trabajadores
+        </h2>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Revisa la información consolidada de remuneraciones y días, corrige jornada, períodos, fechas e incidencias y reprocesa los días y resultados.
+        </p>
+      </div>
+      <BotonExportarInformacion
+        onClick={() => { void exportarValidacion(trabajadoresUnificados, jornadas, fechasEditadas, mesesEditados, incidenciasEditadas) }}
+        disabled={trabajadoresUnificados.length === 0}
+      />
     </div>
 
     <PanelValidacion
@@ -2799,16 +3377,22 @@ trabajadoresImportados.push({
   </div>
 ) : activeStep === 2 ? (
   <div className="flex flex-col gap-6">
-    <div>
-      <p className="mb-1 text-xs font-semibold uppercase tracking-[0.18em] text-primary">
-        Distribución
-      </p>
-      <h2 className="text-xl font-semibold tracking-tight">
-        Distribución del fondo
-      </h2>
-      <p className="mt-1 text-sm text-muted-foreground">
-        Resumen del fondo legal, factores y resultados del ejercicio.
-      </p>
+    <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+      <div>
+        <p className="mb-1 text-xs font-semibold uppercase tracking-[0.18em] text-primary">
+          Distribución
+        </p>
+        <h2 className="text-xl font-semibold tracking-tight">
+          Distribución del fondo
+        </h2>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Resumen del fondo legal, factores y resultados del ejercicio.
+        </p>
+      </div>
+      <BotonExportarInformacion
+        onClick={() => { void exportarDistribucion(results, totals) }}
+        disabled={results.length === 0}
+      />
     </div>
 
     <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
@@ -3203,16 +3787,22 @@ trabajadoresImportados.push({
   </div>
 ) : (
   <div className="flex flex-col gap-7">
-    <div>
-      <p className="mb-1 text-xs font-semibold uppercase tracking-[0.18em] text-primary">
-        Carga de información
-      </p>
-      <h2 className="text-xl font-semibold tracking-tight">
-        Importar base de trabajadores
-      </h2>
-      <p className="mt-1 text-sm text-muted-foreground">
-        Importa los archivos de remuneraciones y días laborados del ejercicio.
-      </p>
+    <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+      <div>
+        <p className="mb-1 text-xs font-semibold uppercase tracking-[0.18em] text-primary">
+          Carga de información
+        </p>
+        <h2 className="text-xl font-semibold tracking-tight">
+          Importar base de trabajadores
+        </h2>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Importa los archivos de remuneraciones y días laborados del ejercicio.
+        </p>
+      </div>
+      <BotonExportarInformacion
+        onClick={() => { void exportarCarga(trabajadores, trabajadoresDias) }}
+        disabled={trabajadores.length === 0 && trabajadoresDias.length === 0}
+      />
     </div>
 
     <Card className="border-primary/30 bg-primary/5">
