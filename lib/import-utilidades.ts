@@ -168,6 +168,17 @@ export function consolidarTrabajadores<T extends ImportedWorker>(...fuentes: T[]
   return [...porDni.values()]
 }
 
+/**
+ * Vista de una carga concreta (por ejemplo, solo días laborados) tomada de la
+ * vista consolidada de todas las cargas. Así cada tarjeta muestra los mismos
+ * nombres y fechas que el resto del sistema, sin listar trabajadores que esa
+ * carga no trajo.
+ */
+export function vistaPorFuente<T extends ImportedWorker>(vista: T[], fuente: T[]): T[] {
+  const dnis = new Set(fuente.map((trabajador) => String(trabajador.dni).trim().padStart(8, '0')))
+  return vista.filter((trabajador) => dnis.has(String(trabajador.dni).trim().padStart(8, '0')))
+}
+
 const months = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'] as const
 
 const MESES_EN_CERO: MonthlyValues = {
@@ -851,6 +862,10 @@ function extraerRemuneracionesClasica(
     return {
       ...existente,
       ...rem,
+      // Una columna de fechas ausente en este archivo no es un dato: la fecha que
+      // ya traía otra carga (por ejemplo, días laborados) debe conservarse.
+      fechaInicio: primerValor(rem.fechaInicio, existente.fechaInicio),
+      fechaCese: primerValor(rem.fechaCese, existente.fechaCese),
       diasTrabajados: existente.diasTrabajados,
       mesesDias: existente.mesesDias,
       mesesPresentes: Array.from(
@@ -911,6 +926,9 @@ export function extraerRemuneraciones(
     return {
       ...existente,
       ...worker,
+      // Misma regla que en el camino clásico: primero la fuente que trae dato.
+      fechaInicio: primerValor(worker.fechaInicio, existente.fechaInicio),
+      fechaCese: primerValor(worker.fechaCese, existente.fechaCese),
       diasTrabajados: existente.diasTrabajados,
       mesesDias: existente.mesesDias,
       mesesPresentes: Array.from(

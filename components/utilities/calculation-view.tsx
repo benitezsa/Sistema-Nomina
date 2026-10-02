@@ -15,7 +15,8 @@
   import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
   import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-  import { calculateFund, calcularDiasNoLaborados, getTotals, money, number } from '@/lib/utilities-calculation'
+  import { calculateFund, getTotals, money, number } from '@/lib/utilities-calculation'
+  import { calcularEmpleados, calcularTrabajador, configuracion, normalizarTrabajador, type ConfiguracionCalculo, type OverridesNormalizacion } from '@/lib/calculo'
   import {
     consolidarTrabajadores,
     extraerDias,
@@ -24,6 +25,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
     inferirAnioEjercicio,
     leerPeriodo,
     mesesTrabajados,
+    vistaPorFuente,
     type ImportedWorker as ImportedWorkerMotor,
     type IncidenciaImportada,
     type PeriodoIncidencia,
@@ -177,13 +179,6 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
     return `${date.getUTCFullYear()}-${pad2(date.getUTCMonth() + 1)}-${pad2(date.getUTCDate())}`
   }
 
-  const parseIncFecha = (value: ExcelJS.CellValue): Date | null => {
-    const s = formatInputDate(value)
-    if (!s) return null
-    const date = new Date(`${s}T00:00:00Z`)
-    return Number.isNaN(date.getTime()) ? null : date
-  }
-
   const SIN_DATO = 'No disponible'
 
   /**
@@ -256,11 +251,6 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 
   type EstadoValidacion = 'Completo' | 'Pendiente'
 
-  // Las incidencias no identificadas no restan días: quedan pendientes de
-  // revisión en Validación.
-  const incidenciasAplicables = (lista: IncidenciaImportada[]): IncidenciaImportada[] =>
-    lista.filter((inc) => inc.estado !== 'no_identificada')
-
   const pendientesDeRevision = (lista: IncidenciaImportada[]): IncidenciaImportada[] =>
     lista.filter((inc) => inc.estado === 'no_identificada')
 
@@ -272,26 +262,51 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
     Pendiente: 'bg-amber-500/10 text-amber-400 border-amber-500/30',
   }
 
+  type FuentesValidacion = {
+    jornadas: Record<string, Jornada>
+    fechasEditadas: Record<string, { fechaInicio?: string; fechaCese?: string }>
+    mesesEditados: Record<string, string[]>
+    incidenciasEditadas: Record<string, IncidenciaImportada[]>
+  }
+
+  function anioDeTrabajador(t: ImportedWorker): number | null {
+    for (const inc of t.incidencias ?? []) {
+      if (inc.periodo?.anio) return inc.periodo.anio
+    }
+    return null
+  }
+
+  function overridesDeTrabajador(t: ImportedWorker, fuentes: FuentesValidacion): OverridesNormalizacion {
+    const fechas = fuentes.fechasEditadas[t.dni] ?? {}
+    const incidencias = fuentes.incidenciasEditadas[t.dni]
+    const jornada = fuentes.jornadas[t.dni] ?? t.jornada
+    return {
+      jornada,
+      ...(fechas.fechaInicio ? { fechaInicio: fechas.fechaInicio } : {}),
+      ...(fechas.fechaCese ? { fechaCese: fechas.fechaCese } : {}),
+      ...(fuentes.mesesEditados[t.dni] ? { meses: fuentes.mesesEditados[t.dni] } : {}),
+      ...(incidencias ? { incidencias } : {}),
+    }
+  }
+
+  function configuracionDeTrabajador(t: ImportedWorker): ConfiguracionCalculo {
+    return configuracion({
+      anioEjercicio: anioDeTrabajador(t),
+      feriados: t.feriados ?? [],
+    })
+  }
+
+  function calcularValidacion(t: ImportedWorker, fuentes: FuentesValidacion) {
+    const config = configuracionDeTrabajador(t)
+    return calcularTrabajador(normalizarTrabajador(t, config, overridesDeTrabajador(t, fuentes)), config)
+  }
+
   function getValidacionCalculada(trabajador: ImportedWorker, jornadas: Record<string, Jornada>, fechasEditadas: Record<string, { fechaInicio?: string; fechaCese?: string }>, mesesEditados: Record<string, string[]>, incidenciasEditadas: Record<string, IncidenciaImportada[]>): { posibles: number; noLaborados: number; efectivos: number; estado: EstadoValidacion; observaciones: string[] } {
-    const jornada = (jornadas[trabajador.dni] ?? trabajador.jornada) as Jornada | undefined
     const fechas = fechasEditadas[trabajador.dni] ?? {}
-    const incidencias = incidenciasEditadas[trabajador.dni] ?? trabajador.incidencias ?? []
-    const noLaborados = calcularDiasNoLaborados(
-      incidenciasAplicables(incidencias).map(inc => ({
-        cantidadDias: inc.cantidadDias,
-        diasNeto: inc.diasNeto,
-        fechaInicio: parseIncFecha(inc.fechaInicio),
-        fechaFin: parseIncFecha(inc.fechaFin),
-      })),
-      jornada ?? 5,
-      new Set(trabajador.feriados ?? [])
-    )
-    const mesesConDias = new Set(mesesTrabajados(trabajador, mesesEditados[trabajador.dni]))
-    const posibles = trabajador.diasPosibles
-      ?? (trabajador.laborablesPorMes
-        ? months.reduce((sum, mes) => sum + (mesesConDias.has(mes) ? (trabajador.laborablesPorMes?.[mes] ?? 0) : 0), 0)
-        : (trabajador.diasTrabajados?.total ?? 0))
-    const efectivos = Math.max(0, posibles - noLaborados)
+    const calculo = calcularValidacion(trabajador, { jornadas, fechasEditadas, mesesEditados, incidenciasEditadas })
+    const noLaborados = calculo.dias.noLaborados
+    const posibles = calculo.dias.laborables
+    const efectivos = calculo.dias.efectivos
     const ingreso = fechaIngresoTrabajador(trabajador, fechas.fechaInicio)
 
     const observaciones: string[] = []
@@ -659,25 +674,10 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
     const jornada = (jornadas[t.dni] ?? t.jornada) as Jornada | undefined
     const fechas = fechasEditadas[t.dni] ?? {}
     const incidencias = incidenciasEditadas[t.dni] ?? t.incidencias ?? []
-    const noLaborados = calcularDiasNoLaborados(
-      incidenciasAplicables(incidencias).map(inc => ({
-        cantidadDias: inc.cantidadDias,
-        diasNeto: inc.diasNeto,
-        fechaInicio: parseIncFecha(inc.fechaInicio),
-        fechaFin: parseIncFecha(inc.fechaFin),
-      })),
-      jornada ?? 5,
-      new Set(t.feriados ?? [])
-    )
-    const mesesConDias = new Set(mesesTrabajados(t, mesesEditados[t.dni]))
-    // DÍAS POSIBLES / LABORABLES: los días posibles del formato CITIKOLD (columna L)
-    // tienen prioridad; en otros formatos se usan los días por mes cargados ("dias mes").
-    const posibles = t.diasPosibles
-      ?? (t.laborablesPorMes
-        ? months.reduce((sum, mes) => sum + (mesesConDias.has(mes) ? (t.laborablesPorMes?.[mes] ?? 0) : 0), 0)
-        : (t.diasTrabajados?.total ?? 0))
-    // DÍAS EFECTIVOS = DÍAS POSIBLES − DÍAS NO LABORADOS (un solo descuento)
-    const efectivos = Math.max(0, posibles - noLaborados)
+    const calculo = calcularValidacion(t, { jornadas, fechasEditadas, mesesEditados, incidenciasEditadas })
+    const noLaborados = calculo.dias.noLaborados
+    const posibles = calculo.dias.laborables
+    const efectivos = calculo.dias.efectivos
     const ingreso = fechaIngresoTrabajador(t, fechas.fechaInicio)
     const cese = fechaCeseTrabajador(t, fechas.fechaCese)
 
@@ -1035,19 +1035,10 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
                   )}
                   {filtrados.map((t) => {
                     const jornada = jornadas[t.dni] ?? t.jornada
-                    const incidencias = incidenciasEditadas[t.dni] ?? t.incidencias ?? []
-                    const noLaborados = calcularDiasNoLaborados(
-                      incidenciasAplicables(incidencias).map(inc => ({
-                        cantidadDias: inc.cantidadDias,
-                        diasNeto: inc.diasNeto,
-                        fechaInicio: parseIncFecha(inc.fechaInicio),
-                        fechaFin: parseIncFecha(inc.fechaFin),
-                      })),
-                      jornada ?? 5,
-                      new Set(t.feriados ?? [])
-                    )
-                    const posibles = t.diasPosibles ?? (t.diasTrabajados?.total ?? 0)
-                    const efectivos = Math.max(0, posibles - noLaborados)
+                    const calculo = calcularValidacion(t, { jornadas, fechasEditadas, mesesEditados, incidenciasEditadas })
+                    const noLaborados = calculo.dias.noLaborados
+                    const posibles = calculo.dias.laborables
+                    const efectivos = calculo.dias.efectivos
                     const estado = estadoValidacion(t)
 
                     return (
@@ -1107,11 +1098,15 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
   function ImportCard({
   kind,
   trabajadores,
+  vista,
   setTrabajadores,
   setTrabajadoresDias,
 }: {
   kind: "remunerations" | "worked-days"
+  /** Registros de esta carga: definen el conteo y los DNI que la tarjeta lista. */
   trabajadores: ImportedWorker[]
+  /** Vista consolidada de todas las cargas, para no perder lo que aporta otra fuente. */
+  vista: ImportedWorker[]
   setTrabajadores: React.Dispatch<React.SetStateAction<ImportedWorker[]>>
   setTrabajadoresDias?: React.Dispatch<React.SetStateAction<ImportedWorker[]>>
 }) {
@@ -2750,9 +2745,14 @@ trabajadoresImportados.push({
       event.target.value = ''
     }
 
+    const trabajadoresVista = useMemo(
+      () => vistaPorFuente(vista, trabajadores),
+      [trabajadores, vista]
+    )
+
     const trabajadoresFiltrados = useMemo(() => {
       const texto = busqueda.toLowerCase().trim()
-      return trabajadores
+      return trabajadoresVista
         .map((t, idx) => ({ trabajador: t, idx }))
         .filter(({ trabajador: t }) => {
           const coincideBusqueda = !texto ||
@@ -2769,7 +2769,7 @@ trabajadoresImportados.push({
           }
           return coincideBusqueda && coincideFiltro
         })
-    }, [trabajadores, busqueda, filtroEstado])
+    }, [trabajadoresVista, busqueda, filtroEstado])
 
     return (
       <Card className="shadow-none">
@@ -2861,8 +2861,8 @@ trabajadoresImportados.push({
     {isRemunerations ? 'Remuneración anual' : 'Días registrados'}
   </p>
   <p className="mt-2 text-2xl font-semibold">
-    {isRemunerations && trabajadores.length > 0
-      ? `S/ ${trabajadores
+    {isRemunerations && trabajadoresVista.length > 0
+      ? `S/ ${trabajadoresVista
           .reduce((total, trabajador) => {
             return total + trabajador.remuneraciones.total
           }, 0)
@@ -2870,8 +2870,8 @@ trabajadoresImportados.push({
             minimumFractionDigits: 2,
             maximumFractionDigits: 2,
           })}`
-      : !isRemunerations && trabajadores.length > 0
-        ? `${trabajadores.reduce((total, trabajador) => {
+      : !isRemunerations && trabajadoresVista.length > 0
+        ? `${trabajadoresVista.reduce((total, trabajador) => {
             return total + (trabajador.diasTrabajados?.total ?? 0)
           }, 0)} días`
         : '—'}
@@ -3182,45 +3182,13 @@ trabajadoresImportados.push({
   const [mesesEditados, setMesesEditados] = useState<Record<string, string[]>>({})
   const [incidenciasEditadas, setIncidenciasEditadas] = useState<Record<string, IncidenciaImportada[]>>({})
   const handleReprocesar = () => {
-    const empleados: Employee[] = trabajadoresUnificados.map((t) => {
-      const jornada = (jornadas[t.dni] ?? t.jornada) as Jornada | undefined
-      const incidencias = incidenciasEditadas[t.dni] ?? t.incidencias ?? []
-      const noLaborados = calcularDiasNoLaborados(
-        incidenciasAplicables(incidencias).map(inc => ({
-          cantidadDias: inc.cantidadDias,
-          diasNeto: inc.diasNeto,
-          fechaInicio: parseIncFecha(inc.fechaInicio),
-          fechaFin: parseIncFecha(inc.fechaFin),
-        })),
-        jornada ?? 5,
-        new Set(t.feriados ?? [])
-      )
-      const mesesConDias = new Set(mesesTrabajados(t, mesesEditados[t.dni]))
-      // DÍAS POSIBLES / LABORABLES: prioridad a los días posibles del formato
-      // CITIKOLD (columna L); en otros formatos se usan los días por mes cargados.
-      const posibles = t.diasPosibles
-        ?? (t.laborablesPorMes
-          ? months.reduce((sum, mes) => sum + (mesesConDias.has(mes) ? (t.laborablesPorMes?.[mes] ?? 0) : 0), 0)
-          : (t.diasTrabajados?.total ?? 0))
-      // DÍAS EFECTIVOS = DÍAS POSIBLES − DÍAS NO LABORADOS (un solo descuento)
-      const efectivos = Math.max(0, posibles - noLaborados)
-      const remuneracionComputable = t.remuneraciones.total ?? 0
-      return {
-        id: t.dni,
-        code: t.dni,
-        name: `${t.apellidoPaterno} ${t.apellidoMaterno}`.trim() || t.nombres,
-        role: '',
-        department: '',
-        days: efectivos,
-        diasLaborables: posibles,
-        diasNoLaborados: noLaborados,
-        diasEfectivos: efectivos,
-        jornada,
-        remuneration: remuneracionComputable,
-        remuneracionComputable,
-        status: posibles > 0 && remuneracionComputable > 0 ? 'Completo' : 'Pendiente',
-      } as Employee & { remuneracionComputable: number }
-    })
+    const fuentes: FuentesValidacion = { jornadas, fechasEditadas, mesesEditados, incidenciasEditadas }
+    const overrides: Record<string, OverridesNormalizacion> = {}
+    for (const t of trabajadoresUnificados) overrides[t.dni] = overridesDeTrabajador(t, fuentes)
+    const anioEjercicio = trabajadoresUnificados.map(anioDeTrabajador).find((anio) => anio !== null) ?? null
+    const feriados = trabajadoresUnificados.find((t) => (t.feriados?.length ?? 0) > 0)?.feriados ?? []
+    const config = configuracion({ anioEjercicio, feriados })
+    const { empleados } = calcularEmpleados(trabajadoresUnificados, config, overrides)
     setReprocesado(true)
     onReprocessed?.(empleados)
   }
@@ -3817,11 +3785,13 @@ trabajadoresImportados.push({
   <ImportCard
     kind="remunerations"
     trabajadores={trabajadores}
+    vista={trabajadoresUnificados}
     setTrabajadores={setTrabajadores}
   />
   <ImportCard
   kind="worked-days"
   trabajadores={trabajadoresDias}
+  vista={trabajadoresUnificados}
   setTrabajadores={setTrabajadoresDias}
   setTrabajadoresDias={setTrabajadoresDias}
 />

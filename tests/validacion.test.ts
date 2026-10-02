@@ -1,12 +1,14 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  consolidarTrabajadores,
   extraerDias,
   extraerRemuneraciones,
   formatearPeriodo,
   inferirAnioEjercicio,
   leerPeriodo,
   mesesTrabajados,
+  vistaPorFuente,
   type ImportedWorker,
 } from '@/lib/import-utilidades'
 import { calcularDiasNoLaborados } from '@/lib/utilities-calculation'
@@ -267,6 +269,56 @@ describe('Fecha de ingreso: fuente única', () => {
     const ingreso = trabajador.fechaInicio
 
     expect(ingreso === '' || ingreso === null || ingreso === undefined).toBe(true)
+  })
+
+  it('una carga de remuneraciones sin columna de fechas no borra el dato previo', () => {
+    const remConFecha = libroRemuneraciones([
+      { dni: '11000003', nombres: 'Ana Perez', ingreso: '2024-03-01', remuneraciones: { enero: 1000 } },
+    ])
+    const previas = extraerRemuneraciones(remConFecha, []).trabajadores
+    expect(buscar(previas, '11000003').fechaInicio).toBe('2024-03-01')
+
+    const remSinFecha = libroRemuneraciones([
+      { dni: '11000003', nombres: 'Ana Perez', remuneraciones: { febrero: 2000 } },
+    ])
+    const despues = extraerRemuneraciones(remSinFecha, previas).trabajadores
+
+    expect(buscar(despues, '11000003').fechaInicio).toBe('2024-03-01')
+  })
+
+  it('la carga de días sin fechas hereda las de remuneraciones en la vista consolidada', () => {
+    const rem = libroRemuneraciones([
+      { dni: '11000004', nombres: 'Ana Perez', ingreso: '2024-05-10', remuneraciones: { enero: 1000 } },
+    ])
+    const remuneraciones = extraerRemuneraciones(rem, []).trabajadores
+
+    // El archivo de días no trae columna de fecha de ingreso.
+    const wbDias = libroDias([{ dni: '11000004', nombres: 'Ana Perez', dias: { enero: 20 } }])
+    const dias = extraerDias(wbDias, []).trabajadores
+    expect(buscar(dias, '11000004').fechaInicio).toBe('')
+
+    // La tarjeta de días muestra la vista consolidada: ya no dice "No disponible".
+    const vista = vistaPorFuente(consolidarTrabajadores(dias, remuneraciones), dias)
+    expect(buscar(vista, '11000004').fechaInicio).toBe('2024-05-10')
+  })
+
+  it('la vista de una carga solo lista a los trabajadores que esa carga trajo', () => {
+    const rem = libroRemuneraciones([
+      { dni: '11000005', nombres: 'Ana Perez', ingreso: '2024-01-05', remuneraciones: { enero: 1000 } },
+      { dni: '11000006', nombres: 'Luis Lopez', remuneraciones: { enero: 1000 } },
+    ])
+    const wbDias = libroDias([{ dni: '11000005', nombres: 'Ana Perez', dias: { enero: 20 } }])
+
+    const remuneraciones = extraerRemuneraciones(rem, []).trabajadores
+    const dias = extraerDias(wbDias, []).trabajadores
+    const consolidada = consolidarTrabajadores(dias, remuneraciones)
+
+    expect(consolidada).toHaveLength(2)
+    expect(vistaPorFuente(consolidada, dias).map((t) => t.dni)).toEqual(['11000005'])
+    expect(vistaPorFuente(consolidada, remuneraciones).map((t) => t.dni)).toEqual([
+      '11000005',
+      '11000006',
+    ])
   })
 })
 

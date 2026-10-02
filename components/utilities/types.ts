@@ -28,6 +28,10 @@ export type Employee = {
   diasLaborables?: number
   diasNoLaborados?: number
   diasEfectivos?: number
+  /** Remuneración mensual computable (base del tope de utilidades). */
+  remuneracionMensual?: number
+  /** Meses con remuneración computable. */
+  mesesConRemuneracion?: number
 }
 
 export type UtilityParameters = {
